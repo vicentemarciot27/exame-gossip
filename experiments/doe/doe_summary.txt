@@ -1,0 +1,9 @@
+Piloto: 480 runs (6 cenários x 4 famílias x 2 N x 10 seeds)
+Designs: 490 (main=400, interaction=90)
+Runs: 14700 (main=12000, interaction=2700)
+Seeds/teste: 1000..1029 (30 por desenho)
+Main: 10 cenários x 5 variantes x 4 tamanhos x 2 budgets x 30 seeds = 12000
+Interaction: 3 perdas x 3 churn x 5 variantes x 2 tamanhos x 1 budget x 30 seeds = 2700
+Tuning Optuna NÃO incluído: planejar separadamente 30 trials por cada uma das 4 famílias do PDF em N=50, com seeds de treino diferentes das de teste.
+Atenção: churn_fraction é magnitude, não o processo temporal de join/leave. Antes de rodar, definir taxa/duração/reentrada, coorte elegível, distribuição das latências, política de partição e orçamento de AE.
+Este script GERA o DOE; não implementa protocolos nem executa simulações.

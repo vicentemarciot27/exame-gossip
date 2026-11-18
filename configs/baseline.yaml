@@ -1,0 +1,21 @@
+name: baseline
+
+simulation:
+  duration_ms: 60000
+  gossip_interval_ms: 500
+
+network:
+  nodes: 100
+  topology: complete
+  latency_ms: [10, 10]
+  packet_loss: 0.0
+  churn_fraction: 0.0
+  partition: null
+
+update:
+  size_bytes: 256
+  initial_infected: 1
+
+budget:
+  bytes_per_node_per_interval: 4096
+  interval_ms: 1000
