@@ -31,10 +31,10 @@ def test_message_arrives_exactly_after_latency():
     assert received == []  # send só agenda; nada é entregue no envio
     assert metrics.summary()["bytes_total"] == 272  # os bytes contam no envio
 
-    env.run(until=10)  # executa os eventos anteriores a t=10
+    env.run(until=10)  # until é exclusivo: a entrega em t=10 ainda não rodou
     assert received == []
 
-    env.run()  # executa até a fila de eventos esvaziar
+    env.run()
     assert received == [(10, 0, MESSAGE)]
 
 
@@ -55,5 +55,5 @@ def test_sample_peers_returns_distinct_peers_and_never_the_node_itself():
         assert len(set(peers)) == 3 and 2 not in peers
         seen.update(peers)
     assert seen == {0, 1, 3, 4}  # todo outro nó pode ser sorteado
-    # Pedir mais peers do que existem devolve todos os outros nós.
+    # k maior que o número de peers: devolve todos, sem erro
     assert sorted(network.sample_peers(2, 10, rng)) == [0, 1, 3, 4]

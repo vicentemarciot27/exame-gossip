@@ -1,8 +1,46 @@
 # Gossip Simulator
 
-Simulador de **eventos discretos** para comparar estratégias de disseminação Gossip em uma rede simulada: **Push**, **Push-Pull**, **Push + anti-entropy** e **Push com fanout adaptativo + anti-entropy**.
+Simulador de eventos discretos que compara quatro estratégias de disseminação Gossip: Push, Push-Pull, Push + anti-entropy e Push com fanout adaptativo + anti-entropy.
 
-A pesquisa compara **cobertura**, **T50/T95**, **tráfego em bytes**, **duplicação**, **overhead de controle** e **recuperação após falhas**, sob latência heterogênea, perda de pacotes, churn e partições. O objetivo é testar *comportamento algorítmico*, não medir desempenho real de gRPC, containers ou sockets. O DOE principal usa 50–500 nós simulados. Uma varredura de escala separada usa 1.000, 10.000 e 100.000 nós.
+As métricas são cobertura, T50/T95, tráfego em bytes, duplicação, overhead de controle e recuperação após falhas, sob latência heterogênea, perda de pacotes, churn e partições. O simulador mede o comportamento dos algoritmos, não o desempenho real de gRPC, containers ou sockets. O DOE principal usa 50–500 nós simulados. Uma varredura de escala separada usa 1.000, 10.000 e 100.000 nós.
+
+## Instalação e execução
+
+Na raiz do repositório, com `uv` instalado:
+
+```bash
+uv sync --extra experiments --extra dev
+uv run --extra experiments jupyter lab experiments/notebook.ipynb
+```
+
+Com `pip` (Python 3.11+):
+
+```bash
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python -m pip install -e '.[experiments,dev]'
+python -m jupyter lab experiments/notebook.ipynb
+```
+
+`uv sync` cria o ambiente e instala o pacote em modo editável. Depois de alterar `src/*.py`, reinicie o kernel do notebook. Versione o `uv.lock`: ele fixa as versões resolvidas.
+
+Testes: `uv run pytest -q`.
+
+Testes e experimentos usam os extras: `uv run --extra experiments --extra dev pytest -q`.
+
+Reprodução dos experimentos, na raiz do repositório. Cada comando reaproveita o que já estiver em `results/`:
+
+```bash
+uv run --extra experiments python experiments/doe.py --out experiments/doe       # manifestos
+uv run --extra experiments python experiments/tuning.py                          # Optuna, grava configs/tuned.yaml
+uv run --extra experiments python experiments/helper.py experiments/doe/doe_pilot.csv
+uv run --extra experiments python experiments/helper.py experiments/doe/doe_runs.csv
+uv run --extra experiments python experiments/helper.py experiments/doe/doe_scale.csv --workers 14
+uv run --extra experiments jupyter nbconvert --to notebook --execute --inplace \
+    --ExecutePreprocessor.timeout=-1 experiments/notebook.ipynb
+```
+
+O notebook executa as mesmas etapas pelas mesmas funções. Rodar os comandos antes evita uma execução de horas dentro do kernel. `results/` não precisa ser versionado: `tuning.db`, `*_summary.csv` e `*_coverage.csv.gz` são gerados de novo pelos comandos acima.
 
 ## Estrutura do projeto
 
@@ -12,13 +50,15 @@ A pesquisa compara **cobertura**, **T50/T95**, **tráfego em bytes**, **duplica�
 ├── README.md
 ├── configs/
 │   ├── baseline.yaml
-│   └── tuned.yaml          # exportado pelo tuning; ainda não existe
+│   └── tuned.yaml          # exportado pelo tuning
 ├── experiments/
 │   ├── helper.py
-│   ├── tuning.py           # a criar
+│   ├── tuning.py
 │   ├── doe.py
 │   ├── doe/                # manifestos CSV gerados por doe.py
 │   └── notebook.ipynb
+├── results/                # gerado pelos experimentos
+├── tests/
 └── src/
     ├── __init__.py
     ├── simulation.py
@@ -32,38 +72,38 @@ A pesquisa compara **cobertura**, **T50/T95**, **tráfego em bytes**, **duplica�
         └── peer_selection.py
 ```
 
-Os arquivos `__init__.py` podem estar vazios. Nesta estrutura mínima, **`src` é o nome do pacote Python** (`from src.simulation import Simulation`). Em um projeto maior, seria mais convencional ter `src/gossip_sim/`, mas não é necessário agora.
+Os arquivos `__init__.py` podem estar vazios. `src` é o nome do pacote Python (`from src.simulation import Simulation`). Um projeto maior usaria `src/gossip_sim/`.
 
 ### Responsabilidade de cada arquivo
 
 | Arquivo | Responsabilidade |
 |---|---|
 | `src/simulation.py` | Cria o `simpy.Environment`, configura nós, inicia processos periódicos, injeta atualizações, agenda eventos de falha e encerra a simulação. Pode conter `Node` inicialmente. |
-| `src/network.py` | Guarda a topologia, sorteia peers (`sample_peers`) sem montar a lista de vizinhos, transporta mensagens **somente pelo relógio simulado**, aplica latência, perda, churn e partições. Único lugar autorizado a entregar mensagens. |
+| `src/network.py` | Guarda a topologia, sorteia peers (`sample_peers`) sem montar a lista de vizinhos, transporta mensagens só pelo relógio simulado, aplica latência, perda, churn e partições. Único módulo que entrega mensagens. |
 | `src/protocols.py` | Implementa Push, Push-Pull e anti-entropy: decide quais mensagens enviar e quando reconciliar versões. Não manipula a fila de eventos diretamente. |
 | `src/metrics.py` | Registra eventos e calcula curvas de cobertura, T50, T95, bytes, controle, duplicatas e tempo de recuperação. Não interfere nas decisões dos nós. |
-| `src/policies/fanout.py` | Fanout fixo e adaptativo. A política adaptativa usa apenas estatísticas **locais** observáveis pelo nó. |
-| `src/policies/budget.py` | Aplica orçamento de comunicação por nó e janela de tempo. Inclui mensagens de dados, controle e reparos. |
+| `src/policies/fanout.py` | Fanout fixo e adaptativo. A política adaptativa usa só estatísticas locais do nó. |
+| `src/policies/budget.py` | Orçamento de comunicação por nó e janela de tempo. Cobre mensagens de dados, controle e reparo. |
 | `src/policies/peer_selection.py` | Escolha de destinatários; opera sobre a visão local de peers. O sorteio uniforme sem reposição já existe em `Network.sample_peers`; este arquivo só é criado se houver uma política não uniforme. |
 | `configs/*.yaml` | Cenários declarativos: duração, nós, topologia, latência, perda, churn, orçamento e parâmetros do protocolo. |
-| `configs/tuned.yaml` | Hiperparâmetros congelados de cada família de protocolo, exportados pelo tuning. Ainda não existe. |
-| `experiments/helper.py` | Cola entre simulador e notebook: `run_trial()`, `run_manifest()` e `summarize_results()`. Lê configurações, executa simulações e devolve `pandas.DataFrame`s. **Sem lógica de Gossip aqui**. |
-| `experiments/tuning.py` | Função objetivo do Optuna e espaço de busca de cada família de protocolo. A criar. |
+| `configs/tuned.yaml` | Hiperparâmetros congelados de cada variante do DOE, exportados pelo tuning. |
+| `experiments/helper.py` | Cola entre simulador e notebook: `run_trial()`, `row_config()`, `run_manifest()` e `summarize_results()`. Converte linhas de manifesto em configurações, executa simulações em paralelo e devolve `pandas.DataFrame`s. Não contém lógica de Gossip. |
+| `experiments/tuning.py` | Espaço de busca de cada família, função objetivo, restrição, regra de escolha na fronteira de Pareto e `tune_all()`. |
 | `experiments/doe.py` | Gera os manifestos CSV do DOE. Não executa simulações. |
 | `experiments/notebook.ipynb` | Orquestra validação, estudos Optuna, execução do DOE, gráficos e análise. Não contém a implementação da simulação. |
 | `pyproject.toml` | Define o pacote, as dependências e os extras para notebooks e testes. |
 
-## Bibliotecas e por que usar cada uma
+## Dependências
 
-O projeto separa bibliotecas necessárias **para simular** das bibliotecas usadas **para experimentar e analisar**.
+As dependências principais bastam para simular. O extra `experiments` traz o que o notebook e a análise usam.
 
 ### Dependências principais
 
 | Biblioteca | Uso |
 |---|---|
-| [SimPy](https://simpy.readthedocs.io/) | **Motor de eventos discretos**. Oferece relógio virtual (`env.now`), processos (`env.process`) e agendamento (`yield env.timeout`). Nada precisa esperar em tempo real. |
-| [NumPy](https://numpy.org/doc/) | Geradores pseudoaleatórios e seeds para peer selection, perdas e latências; permite separar fluxos de aleatoriedade por componente. |
-| [NetworkX](https://networkx.org/documentation/stable/) | Gera a topologia regular de grau 8 do DOE (a implementar). A rede completa é implícita e não usa NetworkX. Não simula a transmissão. |
+| [SimPy](https://simpy.readthedocs.io/) | Motor de eventos discretos: relógio virtual (`env.now`), processos (`env.process`) e agendamento (`yield env.timeout`). Nada espera em tempo real. |
+| [NumPy](https://numpy.org/doc/) | Geradores pseudoaleatórios para sorteio de peers, perdas e latências, com um fluxo de aleatoriedade separado por componente. |
+| [NetworkX](https://networkx.org/documentation/stable/) | Gera a topologia regular de grau 8 do DOE (`random_regular_neighbors` em `src/network.py`). A rede completa é implícita e não usa NetworkX. Não simula a transmissão. |
 | [PyYAML](https://pyyaml.org/wiki/PyYAMLDocumentation) | Lê os arquivos `configs/*.yaml` usando `yaml.safe_load`. |
 
 ### Extra `experiments`
@@ -73,8 +113,8 @@ O projeto separa bibliotecas necessárias **para simular** das bibliotecas usada
 | [JupyterLab](https://jupyterlab.readthedocs.io/) | Ambiente para editar e executar `experiments/notebook.ipynb`. |
 | [ipykernel](https://ipykernel.readthedocs.io/) | Executa o código Python nas células do notebook, usando o ambiente do projeto. |
 | [pandas](https://pandas.pydata.org/docs/) | Tabelas de repetições e séries temporais, agregação por protocolo e exportação CSV. |
-| [Matplotlib](https://matplotlib.org/stable/) | Controle fino de figuras de cobertura ao longo do tempo, tráfego e T95. |
-| [Seaborn](https://seaborn.pydata.org/) | Gráficos estatísticos sobre os DataFrames, incluindo distribuições e intervalos. |
+| [Matplotlib](https://matplotlib.org/stable/) | Figuras de cobertura ao longo do tempo, tráfego e T95. |
+| [Seaborn](https://seaborn.pydata.org/) | Gráficos de distribuições e intervalos sobre os DataFrames. |
 | [SciPy](https://docs.scipy.org/doc/scipy/) | Estatísticas e estimativas de incerteza, quando adequadas à métrica. |
 | [Optuna](https://optuna.readthedocs.io/) | Ajuste de hiperparâmetros em N=50, depois da validação e antes do benchmark final. Usa seeds de treino distintas das seeds do DOE. |
 
@@ -83,34 +123,10 @@ O projeto separa bibliotecas necessárias **para simular** das bibliotecas usada
 | Ferramenta | Uso |
 |---|---|
 | [pytest](https://docs.pytest.org/) (`dev`) | Testes determinísticos dos protocolos, do transporte, do orçamento e da reprodutibilidade. |
-| [Hatchling](https://hatch.pypa.io/) (`build-system`) | Permite instalar o código local em modo editável para importar `src` do notebook, sem hacks no `sys.path`. |
-| [uv](https://docs.astral.sh/uv/) | Gerencia Python, ambiente virtual, dependências e lockfile; é uma ferramenta externa, não uma dependência Python do projeto. |
+| [Hatchling](https://hatch.pypa.io/) (`build-system`) | Instala o código local em modo editável, para o notebook importar `src` sem mexer no `sys.path`. |
+| [uv](https://docs.astral.sh/uv/) | Gerencia Python, ambiente virtual, dependências e lockfile. Ferramenta externa, não é dependência Python do projeto. |
 
-**Não são necessários** Docker, gRPC, Prometheus, OpenTelemetry ou `netem` para esta versão: falhas e atrasos são modelados por eventos simulados.
-
-## Instalação e execução
-
-Na raiz do repositório, com `uv` instalado:
-
-```bash
-uv sync --extra experiments --extra dev
-uv run --extra experiments jupyter lab experiments/notebook.ipynb
-```
-
-Como alternativa com `pip` (Python 3.11+):
-
-```bash
-python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-python -m pip install -e '.[experiments,dev]'
-python -m jupyter lab experiments/notebook.ipynb
-```
-
-`uv sync` cria um ambiente e instala o pacote em modo editável. Durante o desenvolvimento, modifique `src/*.py` e reinicie/recarregue o kernel do notebook se necessário. `uv.lock` deve ser versionado para congelar as versões resolvidas.
-
-Testes: `uv run pytest -q`.
-
-**Observação:** a implementação está parcial. A seção "Implementação (timeline)" lista o que existe em `src/` e o que falta. O notebook é um **roteiro de experimento**, não uma simulação pronta para executar. O arquivo `configs/baseline.yaml` incluído é uma proposta inicial de configuração.
+Docker, gRPC, Prometheus, OpenTelemetry e `netem` não são usados: falhas e atrasos são eventos simulados.
 
 ## Fluxo experimental
 
@@ -129,7 +145,7 @@ As seis etapas do fluxo, em ordem de execução:
 
 ### Papel do DOE e do Optuna
 
-O DOE e o Optuna são etapas complementares. A tabela compara o objetivo, os fatores variados, o resultado e o momento de cada uma.
+Objetivo, fatores variados, resultado e momento de cada etapa:
 
 | | DOE | Optuna |
 |---|---|---|
@@ -153,11 +169,28 @@ Hiperparâmetros que o Optuna ajusta em cada família de protocolo, com o espaç
 | Adaptativo + AE | `timeout_threshold` | real, 0,1 a 0,9 |
 | Adaptativo + AE + quiescência | `quiescence_rounds` | grade, 1 a 10 |
 
-- `gossip_interval_ms` corresponde a `simulation.gossip_interval_ms` em `configs/baseline.yaml`. No Adaptativo + AE ele fica fixo em 500 ms. Os demais hiperparâmetros ainda não têm chave de configuração.
+- `gossip_interval_ms` corresponde a `simulation.gossip_interval_ms` em `configs/baseline.yaml`. No Adaptativo + AE ele fica fixo em 500 ms.
+- `fanout` corresponde a `protocol.fanout` e `ae_interval_ms` a `protocol.ae_interval_ms` (`null` = sem anti-entropy). A família é escolhida por `protocol.name` (`push` ou `push_pull`).
+- `min_fanout`, `max_fanout`, `duplicate_threshold`, `timeout_threshold` e `quiescence_rounds` ficam em `protocol.adaptive`. Com `protocol.adaptive: null`, o fanout é fixo.
 - `duplicate_threshold`: fração de `DATA` duplicadas, entre as `DATA` recebidas pelo nó desde a rodada anterior, acima da qual o nó reduz o fanout em 1.
-- `timeout_threshold`: fração de trocas de anti-entropy com timeout acima da qual o nó aumenta o fanout em 1. A janela de trocas consideradas é definida na implementação do fanout adaptativo (item 6 da timeline).
+- `timeout_threshold`: fração de trocas de anti-entropy com timeout, entre as 5 últimas trocas do nó, acima da qual o nó aumenta o fanout em 1.
 
 O orçamento de bytes por nó e janela é uma restrição experimental. O Optuna não o ajusta, porque aumentar o orçamento melhoraria o desempenho sem medir a qualidade do algoritmo.
+
+### Fanout adaptativo
+
+Cada nó tem um fanout atual, entre `min_fanout` e `max_fanout`. A política está em `src/policies/fanout.py` (`AdaptiveFanout`) e usa só estatísticas locais: as `DATA` que o nó recebeu e o resultado das trocas de anti-entropy que ele iniciou.
+
+| Item | Definição |
+|---|---|
+| Valor inicial | `max_fanout`. A disseminação começa rápida, e o fanout cai quando o nó observa duplicatas. |
+| Redução | A cada rodada de gossip, o nó calcula a fração de duplicatas entre as `DATA` recebidas desde a rodada anterior. Se a fração passa de `duplicate_threshold`, o fanout diminui 1, até `min_fanout`. Uma rodada sem `DATA` recebida não altera o fanout. |
+| Aumento | Quando o resultado de uma troca de anti-entropy fica conhecido (resposta ou timeout), o nó calcula a fração de timeouts nas suas 5 últimas trocas (`TIMEOUT_WINDOW`). Se a fração passa de `timeout_threshold`, o fanout aumenta 1, até `max_fanout`. |
+| Momento das regras | Cada regra é avaliada quando chega informação nova para ela: a de duplicatas a cada rodada de gossip, a de timeouts a cada troca de anti-entropy. |
+| Intervalo de gossip | Fixo em 500 ms. |
+| Churn | Um nó offline mantém o fanout atual e a janela de trocas. |
+
+A janela de 5 trocas é uma escolha deste projeto. Com `ae_interval_ms` de 1.000 a 5.000 ms, ela cobre de 5 a 25 s.
 
 ### Quiescência após saturação local
 
@@ -169,7 +202,7 @@ Cada nó tem dois estados por atualização, ativo e quiescente, e um contador `
 
 | Item | Definição |
 |---|---|
-| Mecanismo | No estado quiescente, a política de fanout devolve 0. A anti-entropy continua nos dois estados. Fica em `src/policies/fanout.py`; não há módulo novo. |
+| Mecanismo | No estado quiescente, a política de fanout devolve 0. A anti-entropy continua nos dois estados. Fica em `src/policies/fanout.py`; não há módulo novo. O estado quiescente é `saturation_count >= quiescence_rounds`; não há indicador separado. |
 | Evidência de saturação | Desde a rodada anterior, o nó recebeu pelo menos uma `DATA` duplicada, ou concluiu uma troca de anti-entropy em que o peer tinha a mesma versão. As duas são estatísticas locais e não exigem mensagens extras. |
 | Contagem | A cada rodada de gossip com evidência, `saturation_count` aumenta 1. Uma rodada sem evidência não zera o contador. |
 | Entrada na quiescência | `saturation_count` atinge `quiescence_rounds`. |
@@ -181,11 +214,11 @@ Cada nó tem dois estados por atualização, ativo e quiescente, e um contador `
 
 A quiescência é uma heurística. As duas evidências indicam que a atualização é comum na vizinhança do nó, mas não provam que todos os peers a têm. O DOE mede o erro dessa heurística pela cobertura, pelo T95 e pelo `recovery_ms` de `adaptive_ae_quiescent` contra `adaptive_ae`.
 
-A evidência por anti-entropy é necessária. Só com duplicatas de Push, os últimos nós ativos deixariam de receber duplicatas, porque os peers já quiescentes não enviam `DATA`, e nunca entrariam em quiescência. Pelo mesmo motivo, uma rodada sem evidência não zera o contador.
+A evidência por anti-entropy não pode ser removida. Só com duplicatas de Push, os últimos nós ativos deixariam de receber duplicatas, porque os peers já quiescentes não enviam `DATA`, e nunca entrariam em quiescência. Pelo mesmo motivo, uma rodada sem evidência não zera o contador.
 
 A quiescência entra no DOE como ablação do fanout adaptativo, com uma única variante, `adaptive_ae_quiescent`. Ela difere de `adaptive_ae` somente pela quiescência.
 
-O tráfego total das variantes sem quiescência cresce com `duration_ms`, porque elas enviam até o fim. Por isso as métricas reportam também os bytes enviados até T95, além do total.
+O tráfego total das variantes sem quiescência cresce com `duration_ms`, porque elas enviam até o fim. Por isso as métricas também reportam os bytes enviados até T95.
 
 Itens fora do escopo:
 
@@ -253,7 +286,7 @@ Uso dos parâmetros congelados no DOE:
 
 ## Especificação do modelo
 
-Regras de mensagens, falhas, orçamento e métricas. `src/` implementa hoje só a latência e o Push; cada regra restante entra no item correspondente da timeline. Os diagramas de estados (churn, caminho de uma mensagem e quiescência) estão em <https://claude.ai/artifact/XyksbJC62AGpVtbRr3LHFe>, página privada do autor do projeto.
+Regras de mensagens, falhas, orçamento e métricas. `src/` implementa todas as regras desta seção, exceto `wall_time_s`, que é medido em `experiments/helper.py`. Os diagramas de estados (churn, caminho de uma mensagem e quiescência) estão em <https://claude.ai/artifact/XyksbJC62AGpVtbRr3LHFe>, página privada do autor do projeto.
 
 ### Mensagens e protocolos
 
@@ -273,6 +306,12 @@ Trocas de mensagens de cada protocolo:
 | Anti-entropy | A cada `ae_interval_ms`, todo nó envia `DIGEST` a 1 peer. O peer responde `DATA` se tiver versão mais nova; senão, responde `DIGEST` com a própria versão. Se a versão respondida for mais antiga que a do iniciador, o iniciador envia `DATA`. |
 
 Uma troca de anti-entropy sem resposta até o próximo tick de anti-entropy do iniciador conta como timeout. Push e Push-Pull não geram timeouts.
+
+- A resposta que conclui a troca é um `DATA` ou `DIGEST` de anti-entropy vindo do peer contatado. Um `DATA` de Push vindo do mesmo peer não conclui a troca.
+- Um `DIGEST` de anti-entropy barrado pelo orçamento do iniciador não abre uma troca e não gera timeout.
+- Um pedido do Push-Pull a um peer sem a atualização fica sem resposta.
+
+No código (`src/protocols.py`), `Message` tem o campo `kind` (`"DATA"` ou `"DIGEST"`) e dois indicadores: `reply`, verdadeiro em toda resposta a um `DIGEST`, e `ae`, verdadeiro nas mensagens de uma troca de anti-entropy. Um `DATA` com `reply` verdadeiro é um reparo. `PushPull` herda de `Push` e só muda a rodada do nó sem a atualização. A anti-entropy é o método `on_ae_round`, ativado por `protocol.ae_interval_ms`.
 
 ### Latência e perda
 
@@ -313,6 +352,8 @@ No mesmo instante simulado, as mudanças de estado da rede (churn, início e fim
 - Toda mensagem é cobrada no envio, pelo tamanho: `DATA` e `DIGEST`, incluindo respostas e reparos.
 - Uma mensagem que não cabe no saldo da janela não é enviada e não fica em fila. Ela conta em `budget_drops`.
 - O saldo é consumido na ordem dos envios dentro da janela.
+- `Network.send` consulta `Budget.try_spend` (`src/policies/budget.py`) antes de contar os bytes e de sortear a perda. Uma mensagem barrada não entra em `bytes_total`.
+- Uma `DATA` tem 272 bytes: o orçamento de 4.096 bytes permite 15 `DATA` por nó a cada janela, e o de 2.048 permite 7. Com rodadas de 500 ms, há duas rodadas por janela; a primeira usa o saldo antes da segunda.
 
 ### Métricas
 
@@ -342,9 +383,9 @@ As métricas usam contadores agregados e os instantes da primeira recepção de 
 
 Toda execução roda até `duration_ms`. Não há parada antecipada quando a cobertura chega a 100%, para que `bytes_total` seja comparável entre variantes.
 
-## Contrato simples entre notebook e simulador
+## Interface entre notebook e simulador
 
-Sugestão de interface pública em `experiments/helper.py`:
+Interface pública de `experiments/helper.py`:
 
 ```python
 def run_trial(config: dict, seed: int) -> tuple[dict, pd.DataFrame]:
@@ -353,22 +394,32 @@ def run_trial(config: dict, seed: int) -> tuple[dict, pd.DataFrame]:
     Retorna a linha de resumo e a curva de cobertura dessa execução.
     """
 
-def run_manifest(plan: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+def row_config(row, params: dict) -> dict:
+    """Configuração de uma linha do manifesto, com os hiperparâmetros da variante."""
+
+def run_manifest(plan: pd.DataFrame, tuned: dict, out=None, workers=None
+                 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Executa cada linha de um manifesto do DOE.
 
     Retorna (summary_df, coverage_df).
     """
 
-def summarize_results(summary_df: pd.DataFrame) -> pd.DataFrame:
-    """Agrega por cenário e variante: medianas, dispersão e fração de
+def summarize_results(summary_df: pd.DataFrame, by=("scenario", "protocol_variant")
+                      ) -> pd.DataFrame:
+    """Agrega por cenário e variante: medianas, quartis de T95 e fração de
     execuções que atingiram T95."""
 ```
 
-`run_manifest` e a função objetivo de `experiments/tuning.py` chamam `run_trial`. Assim, o tuning e o DOE executam o mesmo código de simulação.
+- `tuned` associa cada variante aos seus hiperparâmetros: o conteúdo de `configs/tuned.yaml`. `push_f1` é fixo (fanout 1, 500 ms) e não precisa estar em `tuned`.
+- `row_config` confere, com `assert`, que os hiperparâmetros correspondem ao tratamento descrito na linha do manifesto (`anti_entropy`, `fanout_policy`, `quiescence`).
+- `run_manifest` executa as linhas em paralelo, um processo por núcleo (`workers`). Com `out` (prefixo de arquivo), grava `<out>_summary.csv` e `<out>_coverage.csv.gz` a cada 60 s e, em uma nova chamada, só executa as linhas que faltam.
+- Pela linha de comando: `python experiments/helper.py experiments/doe/doe_pilot.csv` grava em `results/doe_pilot_*`.
 
-Cada variante muda **somente** a escolha de protocolo/políticas; a infraestrutura simulada deve ser a mesma. O helper pode começar sequencial e ser paralelizado depois.
+`run_manifest` chama `run_trial`, e a função objetivo de `experiments/tuning.py` chama `run_manifest` sobre as linhas de N=50 de `doe_design.csv`. Assim, o tuning e o DOE executam o mesmo código de simulação e as mesmas definições de cenário.
 
-**`summary_df`: uma linha por execução**, colunas sugeridas:
+As variantes diferem só no protocolo e nas políticas. A rede simulada é a mesma.
+
+`summary_df` tem uma linha por execução, com as colunas:
 
 ```text
 run_id, scenario, protocol_variant, seed, n_nodes, coverage_final,
@@ -378,7 +429,7 @@ duplicates, timeouts, budget_drops, recovery_ms, wall_time_s
 
 `wall_time_s` é o tempo real da execução, em segundos. Mede o custo do simulador, não do protocolo, e é usado na varredura de escala.
 
-**`coverage_df`: múltiplas linhas por execução**, colunas:
+`coverage_df` tem várias linhas por execução, com as colunas:
 
 ```text
 run_id, scenario, protocol_variant, seed, time_ms, coverage
@@ -390,97 +441,120 @@ run_id, scenario, protocol_variant, seed, time_ms, coverage
 
 ## Organização do `experiments/notebook.ipynb`
 
-O notebook acompanha o fluxo de uma pesquisa, de cima para baixo:
+Seções do notebook, na ordem de execução:
 
-1. **Imports e configuração:** hipóteses em Markdown, `yaml.safe_load` de `configs/baseline.yaml`, seeds de treino e número de trials.
-2. **Validação do simulador:** rede completa sem falhas, N=100, fanout 1 e 3; comparar a curva Push com o modelo analítico.
-3. **Tuning com Optuna em N=50:** um estudo por família de protocolo, com o mesmo número de trials e a função objetivo de `experiments/tuning.py`.
-4. **Exportação dos parâmetros otimizados:** gravar a configuração escolhida de cada família em `configs/tuned.yaml`.
-5. **Carregamento do DOE:** ler os manifestos de `experiments/doe/`, incluindo `doe_scale.csv`.
-6. **Execução do piloto e do benchmark completo:** `run_manifest` sobre `doe_pilot.csv`, depois sobre `doe_runs.csv` e por último sobre `doe_scale.csv`; conferir total de execuções, valores ausentes e execuções sem T95.
-7. **Análise estatística e visualizações:** cobertura × tempo, T95 × tráfego, T95 e bytes por nó × N de 50 a 100.000, medianas e intervalos, casos em que o adaptativo perde, conclusões e limitações.
+1. Imports e configuração: hipóteses em Markdown, `yaml.safe_load` de `configs/baseline.yaml`, seeds de treino e número de trials.
+2. Validação do simulador: rede completa sem falhas, N=100, fanout 1 e 3; comparar a curva Push com o modelo analítico.
+3. Tuning com Optuna em N=50: um estudo por família de protocolo, com o mesmo número de trials e a função objetivo de `experiments/tuning.py`.
+4. Exportação dos parâmetros: gravar a configuração escolhida de cada família em `configs/tuned.yaml`.
+5. Carregamento do DOE: ler os manifestos de `experiments/doe/`, incluindo `doe_scale.csv`.
+6. Piloto e benchmark completo: `run_manifest` sobre `doe_pilot.csv`, depois sobre `doe_runs.csv` e por último sobre `doe_scale.csv`; conferir total de execuções, valores ausentes e execuções sem T95.
+7. Análise estatística e gráficos: tabelas por cenário, cobertura × tempo, T95 × tráfego, efeito de N; comparação pareada com teste de Wilcoxon (7.1), interação perda × churn (7.2), orçamento (7.3), varredura de escala de N=50 a 100.000 (7.4), ablação da quiescência e recuperação após a partição (7.5).
+8. Conclusões: resposta à hipótese, casos em que o adaptativo perde e limitações.
 
 O notebook define os estudos Optuna e os gráficos. A simulação fica em `src/` e é chamada por `experiments/helper.py`.
 
-No estado atual, só executam as células de imports, a curva analítica da validação e o carregamento do DOE. As demais estão comentadas até `experiments/helper.py`, `experiments/tuning.py` e o restante de `src/` serem implementados.
+Todas as células executam. As etapas longas guardam os resultados em `results/` e não repetem o que já foi feito: os estudos Optuna ficam em `results/tuning.db`, e cada manifesto em `results/<manifesto>_summary.csv` e `results/<manifesto>_coverage.csv.gz`. Com esses arquivos presentes, o notebook inteiro executa em poucos minutos.
 
-### Exemplos de células (API a implementar)
-
-Estudo Optuna por família, com `objective` e `constraints` a implementar em `experiments/tuning.py`:
+### Interface de `experiments/tuning.py`
 
 ```python
-import optuna
-from tuning import objective, constraints
+FAMILIES = ("push_tuned", "push_pull", "push_ae", "adaptive_ae")
 
-N_TRIALS = 30  # igual para as quatro famílias
-TUNING_SEEDS = list(range(10))  # disjuntas do piloto e do DOE
-tuning_config = deepcopy(BASE_CONFIG)  # configs/baseline.yaml
-tuning_config["network"]["nodes"] = 50
+def objective(trial, family, seeds, frozen=None, workers=None) -> tuple[float, float]:
+    """Média de T95 e média de bytes nas simulações do trial."""
 
-studies = {}
-# Quatro famílias do PDF. `objective` roda os três cenários de tuning.
-# A grade de quiescence_rounds vem depois, com adaptive_ae congelado.
-for family in ("push", "push_pull", "push_ae", "adaptive_ae"):
-    study = optuna.create_study(
-        directions=["minimize", "minimize"],  # T95 e bytes
-        # TPE em vez do NSGA-II padrão: com população 50, o NSGA-II
-        # faria apenas amostragem aleatória em 30 trials.
-        sampler=optuna.samplers.TPESampler(seed=0, constraints_func=constraints),
-    )
-    study.optimize(
-        lambda trial: objective(trial, family, tuning_config, TUNING_SEEDS),
-        n_trials=N_TRIALS,
-    )
-    studies[family] = study
+def constraints(trial) -> tuple[int]:
+    """Viável se todas as simulações atingem 95% (valor <= 0)."""
+
+def select_trial(study) -> pd.DataFrame:
+    """Tabela dos trials, com as colunas `pareto` e `selected` (regra do README)."""
+
+def tune_all(n_trials, seeds, workers=None) -> tuple[dict, dict]:
+    """Roda os quatro estudos e a grade de quiescência. Devolve (tuned, trials)."""
 ```
 
-Curva de cobertura a partir do `coverage_df` devolvido por `run_manifest`:
-
-```python
-import seaborn as sns
-import matplotlib.pyplot as plt
-
-sns.lineplot(
-    data=coverage_df,
-    x="time_ms",
-    y="coverage",
-    hue="protocol_variant",
-    estimator="mean",
-    errorbar=("ci", 95),
-)
-plt.ylabel("Cobertura (fração)")
-plt.show()
-```
-
-**Importante:** as funções/colunas acima estabelecem um contrato **proposto**, que deve ser implementado em `helper.py` e `src/`. Até isso acontecer, as células de execução são exemplos.
+- As famílias têm o nome da variante do DOE que usa os parâmetros. A família Push do PDF é `push_tuned`.
+- Os quatro estudos usam `optuna.samplers.TPESampler(seed=0, constraints_func=constraints)`. O NSGA-II padrão, com população 50, faria só amostragem aleatória em 30 trials.
+- A grade de `quiescence_rounds` usa `optuna.samplers.GridSampler`, com os parâmetros de `adaptive_ae` passados em `frozen`.
+- Pela linha de comando: `python experiments/tuning.py` roda tudo e grava `configs/tuned.yaml`.
 
 ## Reprodutibilidade e comparações justas
 
-- **Mesmo cenário e orçamento de bytes** por nó/intervalo para todos os protocolos (incluindo anti-entropy e controle).
-- **Seeds registradas e separadas por componente:** topologia, falhas e latência não devem mudar indevidamente entre tratamentos; o RNG de um protocolo não deve consumir o RNG de outro.
-- **Mesmo horizonte** e mesma definição de coorte/cobertura; reportar não convergência e execuções sem T95.
-- **Controle de erros:** primeiro validar comportamento em rede completa sem falhas; depois adicionar atraso, perdas e churn isoladamente.
-- **Experimentos repetidos:** rodar múltiplas seeds, apresentar dispersão e não apenas médias.
-- **Optuna:** ajustar em N=50 com seeds de treino disjuntas das seeds do piloto e do DOE, mesmo número de trials por família e orçamento fixo. Não reajustar os parâmetros depois de observar os resultados do DOE.
-- **Logs/CSV:** salvar resultados brutos, configuração, seed e versão do código. Evitar commit de arquivos de saída grandes.
+- Mesmo cenário e mesmo orçamento de bytes por nó e intervalo para todos os protocolos, incluindo anti-entropy e controle.
+- Seeds registradas e separadas por componente: topologia, falhas e latência são as mesmas entre tratamentos com a mesma seed, e o gerador aleatório de um componente não consome o de outro.
+- Mesmo horizonte e mesma definição de coorte e cobertura. Reportar execuções que não convergem e execuções sem T95.
+- Validar primeiro em rede completa sem falhas. Depois adicionar atraso, perda e churn, um de cada vez.
+- Rodar várias seeds e apresentar a dispersão, não só a média.
+- Optuna: ajustar em N=50 com seeds de treino disjuntas das seeds do piloto e do DOE, mesmo número de trials por família e orçamento fixo. Não reajustar os parâmetros depois de ver os resultados do DOE.
+- Salvar resultados brutos, configuração, seed e versão do código. Não commitar arquivos de saída grandes.
+
+## Resultados
+
+Resumo de `experiments/notebook.ipynb`, que traz as tabelas completas, os gráficos e os testes estatísticos. Os números são medianas. Salvo indicação, valem para N=100 e orçamento de 4.096 bytes, com 30 seeds. As razões são medianas de pares com o mesmo cenário, N, orçamento e seed.
+
+Volume executado: 3.900 simulações de tuning, 600 do piloto, 17.640 do DOE e 540 da varredura de escala. Todas as execuções do DOE e da varredura atingiram 95% de cobertura e terminaram com cobertura 1,0.
+
+Parâmetros congelados em `configs/tuned.yaml`, escolhidos em N=50:
+
+| Variante | Parâmetros |
+|---|---|
+| `push_f1` | fanout 1, rodada a cada 500 ms (fixo, sem tuning) |
+| `push_tuned` | fanout 1, rodada a cada 250 ms |
+| `push_pull` | fanout 2, rodada a cada 500 ms |
+| `push_ae` | fanout 1, rodada a cada 250 ms, anti-entropy a cada 1.000 ms |
+| `adaptive_ae` | fanout de 1 a 3, `duplicate_threshold` 0,38, `timeout_threshold` 0,68, anti-entropy a cada 2.000 ms |
+| `adaptive_ae_quiescent` | os de `adaptive_ae`, com `quiescence_rounds` 1 |
+
+Cenário estável:
+
+| Variante | T95 (ms) | Bytes até T95 (kB) | Bytes em 60 s (MB) |
+|---|---|---|---|
+| `push_f1` | 5.510 | 102 | 3,04 |
+| `push_tuned` | 2.760 | 102 | 6,30 |
+| `push_pull` | 2.020 | 94 | 6,35 |
+| `push_ae` | 2.030 | 78 | 6,54 |
+| `adaptive_ae` | 2.510 | 114 | 3,32 |
+| `adaptive_ae_quiescent` | 2.510 | 80 | 0,20 |
+
+Razão pareada `adaptive_ae / baseline`, faixa nos nove cenários sem partição (abaixo de 1, o adaptativo é melhor):
+
+| Baseline | T95 | Bytes em 60 s |
+|---|---|---|
+| `push_f1` | 0,41 a 0,45 | 1,10 a 1,13 |
+| `push_tuned` | 0,86 a 0,89 | 0,53 a 0,54 |
+| `push_pull` | 1,20 a 1,24 | 0,52 a 0,53 |
+| `push_ae` | 1,07 a 1,15 | 0,51 a 0,52 |
+
+Conclusões:
+
+- A hipótese vale em parte. `adaptive_ae` envia cerca de metade dos bytes das três famílias de fanout fixo ajustadas e é mais rápido que o Push ajustado. Ele é mais lento que Push-Pull (cerca de 500 ms, uma rodada) e que Push + AE; a diferença é significativa em todos os cenários (Wilcoxon pareado, p < 1e-21).
+- A economia vem do tráfego depois da saturação. Até T95, todas as variantes gastam entre 0,75 e 1,3 kB por nó, de N=50 a N=100.000. A razão de 0,5 nos bytes totais depende do horizonte de 60 s.
+- Perda e churn juntos (perda de 1% a 10%, churn de 5% a 20%) não mudam as razões entre variantes. Em N=500, T95 de `adaptive_ae` vai de 3.510 a 4.010 ms entre a combinação mais leve e a mais pesada; o de `push_tuned`, de 3.760 a 4.760 ms.
+- O orçamento não diferenciou as variantes. Com 4.096 bytes nenhuma mensagem foi barrada. Com 2.048 bytes houve mensagens barradas em 91% das execuções de `adaptive_ae`, sem efeito em T95 ou nos bytes.
+- Escala: T95 cresce de forma linear com log N. No cenário estável, de N=50 a N=100.000, `push_f1` vai de 5.010 a 11.760 ms e `adaptive_ae` de 2.020 a 5.010 ms. A razão de bytes de `adaptive_ae` contra `push_tuned` é 0,53 em N=1.000, 10.000 e 100.000.
+- Quiescência: `adaptive_ae_quiescent` envia de 6% a 8% dos bytes de `adaptive_ae`, com T95 de 4% a 17% maior no DOE principal e até 33% maior na varredura de escala. Cobertura final e recuperação após a partição são iguais.
+- Recuperação após a partição (`recovery_ms`): `push_pull` 20 ms, `push_ae` 260 ms, `adaptive_ae` e `adaptive_ae_quiescent` 510 ms, `push_tuned` 760 ms, `push_f1` 1.510 ms, iguais de N=50 a 500. O valor de `push_pull` depende de a reconexão coincidir com uma rodada.
+
+A seção 8 do notebook lista os casos em que o adaptativo perde e as limitações do estudo.
 
 ## Implementação (timeline)
 
-Estado em 18/11/2026: os itens 1 e 2 estão implementados e testados (`tests/test_network.py`, `tests/test_push.py`, `tests/test_metrics.py`). A parte do item 7 que não depende de falhas também está feita. Os demais estão pendentes.
+Estado em 19/11/2026: os nove itens estão feitos. O código de `src/` e de `experiments/` tem 50 testes (`tests/`). Os resultados estão em `experiments/notebook.ipynb`.
 
 1. `simulation.py` + `network.py` + `protocols.py`: Push simples, sem falhas, um evento versionado. Feito: rede completa implícita, latência uniforme em ms inteiros, fanout fixo, sorteio uniforme de peers sem reposição, um gerador aleatório por componente (rede, protocolo, injeção).
-2. `metrics.py`: as colunas definidas em "Especificação do modelo", com contadores agregados. Um registro por mensagem não cabe na memória em N=100.000 (10 milhões de mensagens por execução). Feito: `coverage_final`, `t50_ms`, `t95_ms`, `bytes_total`, `bytes_until_t95`, `duplicates` e a curva de cobertura amostrada. Pendente: `bytes_control`, `bytes_repair`, `timeouts`, `budget_drops` e `recovery_ms` entram com os mecanismos que os geram; `wall_time_s` entra em `experiments/helper.py`; a coorte de nós online entra com o churn.
-3. `policies/fanout.py` e `peer_selection.py`: baselines fixos e comparação inicial.
-4. `network.py`: perda, latência heterogênea, churn e partição; topologia regular de grau 8.
-5. `protocols.py`: Push-Pull e anti-entropy; `budget.py`: teto de bytes.
-6. `fanout.py`: heurística adaptativa baseada em estatísticas locais; depois, quiescência como variante de ablação.
+2. `metrics.py`: as colunas definidas em "Especificação do modelo", com contadores agregados. Um registro por mensagem não cabe na memória em N=100.000 (10 milhões de mensagens por execução). Feito: `coverage_final`, `t50_ms`, `t95_ms`, `bytes_total`, `bytes_until_t95`, `duplicates` e a curva de cobertura amostrada. Feito depois, com os mecanismos que os geram: a coorte de nós online e `recovery_ms` (item 4); `bytes_control`, `bytes_repair`, `timeouts` e `budget_drops` (item 5). `wall_time_s` é medido em `helper.run_trial`.
+3. `policies/fanout.py` e `peer_selection.py`: baselines fixos e comparação inicial. Feito: `FixedFanout`. `peer_selection.py` ficou vazio, porque o sorteio uniforme de `Network.sample_peers` é a única política de seleção usada.
+4. `network.py`: perda, latência heterogênea, churn e partição; topologia regular de grau 8. Feito, conforme a "Especificação do modelo": a rede guarda o estado (`online`, `partition_groups`) e aplica a regra de entrega; `simulation.py` agenda o churn e a partição; a cobertura usa a coorte de nós online; `recovery_ms` existe.
+5. `protocols.py`: Push-Pull e anti-entropy; `budget.py`: teto de bytes. Feito, conforme a "Especificação do modelo": `Message` com `kind`, `reply` e `ae`; `PushPull`; `Push.on_ae_round` com contagem de timeouts; `Budget` com janelas fixas, consultado em `Network.send`. As execuções de Push sem anti-entropy são idênticas às anteriores.
+6. `fanout.py`: heurística adaptativa baseada em estatísticas locais; depois, quiescência como variante de ablação. Feito: `AdaptiveFanout`, com o estado por nó em listas indexadas pelo id; o protocolo informa à política o resultado de cada troca de anti-entropy (`on_ae_result`) e a adoção de versão mais nova (`on_newer_version`).
 7. Validação: testes de corretude e comparação com o modelo analítico. Feito para o Push sem falhas: em N=100 e 30 seeds, a cobertura média simulada difere da recorrência da página 3 do PDF em no máximo 0,007 (fanout 1) e 0,006 (fanout 3) nas 12 primeiras rodadas (`tests/test_metrics.py`).
-8. `experiments/tuning.py`: tuning com Optuna em N=50 e grade de `quiescence_rounds`; exportar `configs/tuned.yaml`.
-9. DOE no notebook: piloto, benchmark completo, varredura de escala e análise estatística.
+8. `experiments/tuning.py`: tuning com Optuna em N=50 e grade de `quiescence_rounds`; exportar `configs/tuned.yaml`. Feito: 120 trials e 10 pontos de grade, 3.900 simulações.
+9. DOE no notebook: piloto, benchmark completo, varredura de escala e análise estatística. Feito: 600 + 17.640 + 540 execuções.
 
-## Rastreabilidade com a apresentação (8 slides) e DOE completo
+## Rastreabilidade com a apresentação e plano do DOE
 
-**Status:** a implementação está parcial. Existem o transporte, o Push sem falhas em rede completa e as métricas de cobertura, T50/T95, bytes e duplicatas, com testes. Falhas de rede, Push-Pull, anti-entropy, políticas, `experiments/helper.py` e `experiments/tuning.py` não existem. O notebook contém exemplos comentados; `experiments/doe.py` **gera somente planos de execução**, não resultados científicos.
+`experiments/doe.py` só gera os planos de execução. Os resultados vêm de `experiments/helper.py` e do notebook.
 
 ### Experimentos exigidos pela proposta original
 
@@ -490,17 +564,17 @@ Estado em 18/11/2026: os itens 1 e 2 estão implementados e testados (`tests/tes
 | Págs. 4–5 | Push; Push-Pull; Push+AE; Adaptativo+AE | Quatro famílias de protocolos sobre o mesmo motor |
 | Pág. 5 | `50–500` nós; fanout fixo/adaptativo; perdas; churn; latência; orçamento bytes/nó/intervalo | Variar os fatores, usando as mesmas condições exógenas para todos os protocolos |
 | Pág. 5 | Cobertura, T50, T95, tráfego por atualização, duplicação, recuperação e overhead | Emitir métricas por evento e agregar com definições explícitas |
-| Pág. 5 | Ajustar parâmetros com Optuna em `N=50`, mesmo número de tentativas por protocolo | Estudo de tuning **separado** do benchmark final; seeds de treino/teste distintas |
+| Pág. 5 | Ajustar parâmetros com Optuna em `N=50`, mesmo número de tentativas por protocolo | Estudo de tuning separado do benchmark final; seeds de treino e de teste distintas |
 | Pág. 6 | Estável (0%, 10 ms, 0% churn); perda 1–10%; atraso 10–200 ms; churn 5–20%; partição de dois grupos | Cinco famílias de cenário, com níveis explícitos |
 | Págs. 3, 6 | Efeito conjunto de fanout adaptativo e AE sob *churn e perdas*; relatar casos sem ganho | DOE fatorial extra `packet_loss × churn`, comparação pareada com baselines |
 | Págs. 6–7 | Escalabilidade, tráfego/nó × N, recuperação após reconexão, seeds e dispersão | Varredura de N de 50 a 500 no DOE principal e de 1.000 a 100.000 em `doe_scale.csv`; tabela e gráficos por N; teste de falhas com reconexão |
-| Págs. 7–8 | Nó por processo, Docker/Go/gRPC/netem/OTel (arquitetura antiga) | **Mudança de escopo:** nó como entidade virtual, transporte de eventos, métricas em CSV. Esta equivalência precisa ser aceita pelo professor; não mede rede real. |
+| Págs. 7–8 | Nó por processo, Docker/Go/gRPC/netem/OTel (arquitetura antiga) | Mudança de escopo: nó como entidade virtual, transporte de eventos, métricas em CSV. O professor precisa aceitar essa equivalência; ela não mede rede real. |
 
-Os trabalhos relacionados da **página 2** (SWIM, HyParView, Plumtree e GossipSub) contextualizam a pesquisa; o PDF **não exige implementar** cada um deles.
+Os trabalhos relacionados da página 2 (SWIM, HyParView, Plumtree e GossipSub) são contexto. O PDF não exige implementá-los.
 
 ### Plano DOE
 
-Execute na raiz:
+Na raiz:
 
 ```bash
 python experiments/doe.py --out experiments/doe
@@ -510,29 +584,29 @@ Sem `--out`, o script grava os arquivos na pasta `experiments/`.
 
 Saídas:
 
-- `experiments/doe/doe_pilot.csv`: **600 execuções** (as cinco variantes com tuning, dois N, 6 cenários incluindo perda+churn, dez seeds).
-- `experiments/doe/doe_design.csv`: **588 combinações** de fatores do plano completo, ainda sem seeds.
-- `experiments/doe/doe_runs.csv`: **17.640 execuções planejadas**, cada uma com seed.
-- `experiments/doe/doe_scale.csv`: **540 execuções** da varredura de escala (N=1.000, 10.000 e 100.000), fora das 17.640.
+- `experiments/doe/doe_pilot.csv`: 600 execuções (as cinco variantes com tuning, dois N, 6 cenários incluindo perda+churn, dez seeds).
+- `experiments/doe/doe_design.csv`: 588 combinações de fatores do plano completo, ainda sem seeds.
+- `experiments/doe/doe_runs.csv`: 17.640 execuções planejadas, cada uma com seed.
+- `experiments/doe/doe_scale.csv`: 540 execuções da varredura de escala (N=1.000, 10.000 e 100.000), fora das 17.640.
 - `experiments/doe/doe_summary.txt`: relatório com contagens.
 
-**Fase principal:** 10 configurações de cenário × 6 variantes × 4 tamanhos de rede × 2 orçamentos × 30 seeds = **14.400** execuções.
+Fase principal: 10 configurações de cenário × 6 variantes × 4 tamanhos de rede × 2 orçamentos × 30 seeds = 14.400 execuções.
 
 - Dez cenários = estável (1), perda de pacotes 1/5/10% (3), latência heterogênea 10–100 e 10–200 ms (2), churn 5/10/20% (3), partição temporária (1).
 - Seis variantes = `push_f1`, `push_tuned`, `push_pull`, `push_ae`, `adaptive_ae`, `adaptive_ae_quiescent`. `push_f1` é o baseline fixo sem tuning. As quatro seguintes são as famílias do PDF com os parâmetros de `configs/tuned.yaml`. `adaptive_ae_quiescent` é a ablação da quiescência.
 - N = 50, 100, 250, 500; orçamento = 2.048 ou 4.096 bytes/nó a cada 1.000 ms; 30 seeds reservadas ao teste (1000..1029).
 
-**Interação crítica:** perda 1/5/10% × churn 5/10/20% × 6 variantes × N=100/500 × orçamento 4.096 × 30 seeds = **3.240** execuções adicionais. Assim, a hipótese da página 3 é testada diretamente.
+Interação perda × churn: perda 1/5/10% × churn 5/10/20% × 6 variantes × N=100/500 × orçamento 4.096 × 30 seeds = 3.240 execuções adicionais. Essa fase testa a hipótese da página 3.
 
-**O tuning com Optuna não está incluído nessas 17.640 execuções.** Ele ocorre antes do DOE, em N=50, com 30 trials para cada uma das quatro famílias de protocolos e seeds de treino 0..9, distintas das seeds do piloto e do teste. Os parâmetros são congelados em `configs/tuned.yaml` antes da primeira execução do DOE. A função objetivo, a restrição de cobertura e a regra de escolha estão fixadas na seção "Fluxo experimental".
+O tuning com Optuna não entra nas 17.640 execuções. Ele ocorre antes do DOE, em N=50, com 30 trials para cada uma das quatro famílias de protocolos e seeds de treino 0..9, distintas das seeds do piloto e do teste. Os parâmetros são congelados em `configs/tuned.yaml` antes da primeira execução do DOE. A função objetivo, a restrição de cobertura e a regra de escolha estão fixadas na seção "Fluxo experimental".
 
-**Importante: os níveis 2.048/4.096 bytes, tamanhos 100/250, 30 seeds, duração de 60 s, distribuição uniforme das latências, partição de 0 a 20 s, período de churn de 5 s e grau 8 são decisões deste projeto para o DOE**, não valores determinados pelo PDF. Os valores de perda, churn e as cinco famílias de cenário são extraídos da apresentação. A seção "Especificação do modelo" define o churn, a partição, a perda e as métricas.
+Os níveis 2.048/4.096 bytes, tamanhos 100/250, 30 seeds, duração de 60 s, distribuição uniforme das latências, partição de 0 a 20 s, período de churn de 5 s e grau 8 são decisões deste projeto, não valores do PDF. Os valores de perda, churn e as cinco famílias de cenário são extraídos da apresentação. A seção "Especificação do modelo" define o churn, a partição, a perda e as métricas.
 
 ### Varredura de escala
 
 A faixa de 50–500 nós vem da arquitetura original com Docker, gRPC e netem. Na simulação de eventos discretos, um nó é um objeto Python, e a faixa pode crescer. As páginas 6–7 do PDF pedem escalabilidade e tráfego por nó em função de N.
 
-A varredura de escala é um manifesto separado, `experiments/doe/doe_scale.csv`, com **540 execuções**: 3 cenários × 6 variantes × 3 tamanhos × 1 orçamento × 10 seeds. O DOE principal continua em N=50–500, porque o PDF define essa faixa e porque repetir as 17.640 execuções em redes maiores multiplicaria o custo sem acrescentar fatores.
+A varredura de escala é um manifesto separado, `experiments/doe/doe_scale.csv`, com 540 execuções: 3 cenários × 6 variantes × 3 tamanhos × 1 orçamento × 10 seeds. O DOE principal continua em N=50–500, porque o PDF define essa faixa e porque repetir as 17.640 execuções em redes maiores multiplicaria o custo sem acrescentar fatores.
 
 | Fator | Níveis da varredura de escala |
 |---|---|
@@ -568,7 +642,15 @@ Medição em uma máquina, Push com fanout 1, rede completa, sem falhas, seed 1,
 
 Com fanout 3 em N=10.000 e 60 s: 3.364.857 mensagens, 40,40 s, 81 MB.
 
-Essas medições são em rede completa. O DOE e a varredura usam a topologia regular de grau 8, que ainda não existe em `src/`; o tempo e a memória nessa topologia precisam ser medidos em N=1.000, 10.000 e 100.000 antes de rodar a varredura.
+As medições acima são em rede completa. O DOE e a varredura usam a topologia regular de grau 8. Medição nessa topologia, com as métricas ligadas, Push de fanout 1, 60 s, sem falhas, seed 1, uma execução por linha:
+
+| N | Geração do grafo | Execução | Memória de pico | T95 |
+|---|---|---|---|---|
+| 1.000 | 0,02 s | 1,71 s | 50 MB | 8.010 ms |
+| 10.000 | 0,13 s | 21,84 s | 73 MB | 10.010 ms |
+| 100.000 | 2,09 s | 297,97 s | 298 MB | 12.010 ms |
+
+O tempo de execução fica 20% a 40% acima do medido em rede completa, que não tinha as métricas ligadas. T95 aumentou 2.000 ms (4 rodadas) a cada multiplicação de N por 10, o que é compatível com crescimento logarítmico; é uma seed por tamanho, não uma validação.
 
 Causa do custo anterior: o tempo crescia com N², porque cada envio ordenava a lista de N−1 vizinhos e o NumPy copiava essa lista para sortear um peer. No perfil de N=1.000, `Push.on_round` ocupava 5,1 s de 6,4 s. O grafo completo guardava N(N−1)/2 arestas; em N=10.000 seriam 50 milhões de arestas.
 
@@ -576,41 +658,80 @@ O código atual sorteia posições em 0..N−2 e pula o próprio nó. Os sorteio
 
 O custo atual é proporcional ao número de mensagens, N × fanout × rodadas. Com intervalo de 500 ms e 60 s, são 119 rodadas. A rede completa satura em cerca de 30 rodadas (em N=100.000, 99.999 nós tinham a atualização em t=15 s; em N=1.000.000, 999.885 de 1.000.000). No Push estático, a maior parte das mensagens de uma execução de 60 s é enviada depois da saturação.
 
-Estimativa para as 540 execuções: 25 a 35 horas de CPU, quase todas em N=100.000. A estimativa supõe que as seis variantes somam cerca de doze vezes o custo de `push_f1`; só o Push com fanout 1 e 3 foi medido, em rede completa e sem falhas. As execuções são independentes e podem rodar em paralelo, uma por processo.
+Custo por protocolo, medido em N=10.000 na topologia regular, fanout 1, 60 s, sem falhas, seed 1, uma execução por linha, com o orçamento de 4.096 bytes ligado:
+
+| Protocolo | Execução | Memória de pico | T95 | `bytes_control / bytes_total` |
+|---|---|---|---|---|
+| Push | 20,75 s | 75 MB | 10.010 ms | 0% |
+| Push-Pull | 24,44 s | 74 MB | 5.020 ms | 0,5% |
+| Push + anti-entropy a cada 1.000 ms | 48,00 s | 99 MB | 6.020 ms | 5,9% |
+
+A anti-entropy a cada 1.000 ms mais que dobra o tempo de execução, porque cada troca acrescenta duas mensagens por nó a cada segundo às duas `DATA` do Push.
+
+Três mudanças posteriores reduziram o tempo sem alterar nenhum resultado:
+
+- A entrega de cada mensagem é um callback do `Timeout` do SimPy, em vez de um processo por mensagem. A fila de eventos recebe um evento por mensagem em vez de três.
+- Há um processo SimPy por intervalo (rodada de gossip, tick de anti-entropy), que percorre os nós em ordem de id, em vez de um processo por nó.
+- O sorteio de um único peer usa `rng.integers` em vez de `rng.choice(..., size=1, replace=False)`. As duas chamadas devolvem o mesmo valor e deixam o gerador no mesmo estado (conferido em 14 tamanhos de população, 50.000 sorteios cada). Com latência constante, o sorteio da latência é dispensado.
+
+As mesmas medições com o código atual, uma execução por linha, máquina sem outra carga:
+
+| Caso | Antes | Depois |
+|---|---|---|
+| N=10.000, Push | 20,75 s | 6,33 s |
+| N=10.000, Push-Pull | 24,44 s | 7,45 s |
+| N=10.000, Push + anti-entropy a cada 1.000 ms | 48,00 s | 14,09 s |
+| N=100.000, Push | 297,97 s, 298 MB | 80,73 s, 193 MB |
+
+T95 e `bytes_total` dessas execuções são iguais antes e depois. As 600 execuções do piloto e as 17.640 do DOE foram executadas com o código anterior e com o atual: todas as colunas do `summary_df`, exceto `wall_time_s`, e todas as curvas de cobertura são idênticas.
+
+Custo medido dos experimentos, em um notebook com 24 núcleos (32 threads). `wall_time_s` inclui a disputa por CPU entre os processos:
+
+| Etapa | Execuções | Tempo de relógio | Soma de `wall_time_s` |
+|---|---|---|---|
+| Tuning | 3.900 | 2 min | não medido |
+| Piloto | 600 | 22 s | 0,2 h |
+| DOE | 17.640 | 9 min | 4,9 h |
+| Varredura de escala | 540 | cerca de 75 min, com 22 a 24 processos | 23,6 h |
+
+Na varredura, a mediana de `wall_time_s` por execução em N=100.000 vai de 98 s (`adaptive_ae_quiescent`) a 729 s (`push_ae`). Cada processo ocupa cerca de 300 MB em N=100.000.
 
 #### Itens propostos e não adotados
 
-- **N=10.000 como escala principal do DOE.** O DOE principal fica em 50–500. A varredura cobre as escalas maiores com 540 execuções.
-- **Motor próprio com `heapq`, Rust, estado em arrays NumPy.** O SimPy executa N=100.000 em memória abaixo de 300 MB. Só há motivo para trocar o motor se N=1.000.000 com 60 s entrar no plano.
-- **Callback no `Timeout` em vez de um processo por mensagem.** Medido em um protótipo, N=10.000: 8,9 s contra 11,3 s (22% menos). O ganho não justifica mudar o transporte agora.
-- **Pico de memória e eventos por segundo como métricas.** A pergunta de pesquisa é sobre os protocolos. O `summary_df` registra só `wall_time_s`.
-- **N=1.000.000 no manifesto.** Uma execução de Push com fanout 1 e 15 s simulados já foi medida (tabela acima). Com 60 s, seriam cerca de 119 milhões de mensagens por execução.
+- N=10.000 como escala principal do DOE. O DOE principal fica em 50–500. A varredura cobre as escalas maiores com 540 execuções.
+- Motor próprio com `heapq`, Rust ou estado em arrays NumPy. O SimPy executa N=100.000 com menos de 300 MB. Trocar o motor só faz sentido se N=1.000.000 com 60 s entrar no plano.
+- Pico de memória e eventos por segundo como métricas. A pergunta de pesquisa é sobre os protocolos. O `summary_df` registra só `wall_time_s`.
+- N=1.000.000 no manifesto. Uma execução de Push com fanout 1 e 15 s simulados já foi medida (tabela acima). Com 60 s, seriam cerca de 119 milhões de mensagens por execução.
 
-#### Decisões em aberto da varredura de escala
+#### Decisões da varredura de escala
 
-- Incluir N=1.000.000 como caso único de estresse, com horizonte menor que 60 s. Horizontes diferentes tornam `bytes_total` não comparável entre escalas; `bytes_until_t95` continua comparável.
-- Topologia. O manifesto usa a regular de grau 8, como o DOE principal. A rede completa permitiria comparar com a previsão teórica.
-- Conjunto de cenários. A partição temporária ficou fora da varredura.
+A varredura foi executada como está no manifesto. Três opções ficaram de fora:
 
-### Checklist de implementação antes de qualquer resultado válido
+- N=1.000.000 como caso único de estresse, com horizonte menor que 60 s. Horizontes diferentes tornam `bytes_total` não comparável entre escalas; `bytes_until_t95` continua comparável.
+- Rede completa. O manifesto usa a topologia regular de grau 8, como o DOE principal. A rede completa permitiria comparar com a previsão teórica.
+- Partição temporária. A varredura usa só os cenários estável, perda de 5% e churn de 10%.
 
-1. **Modelo de eventos:** implementar `Simulation` com SimPy; relógio e ordem determinística de eventos simultâneos.
-2. **Estado local:** `Node` com ID, peers, versões, IDs vistos, contadores de duplicatas/timeouts e bytes; impedir vazamento de estado global para políticas.
-3. **Mensagens versionadas:** criação de atualização por ID e versão, entrega/deduplicação e atualização da versão local.
-4. **Membership / peers:** política de visão local e transições join/leave; estabelecer o que acontece com a memória do nó na reconexão.
-5. **Transporte:** latência, perdas e partições com regras explícitas para mensagens em trânsito e endpoints que mudam de estado.
-6. **Protocolos:** Push, Push-Pull, anti-entropy periódica e combinação Push adaptativo+AE; configurar frequência e tamanhos reais das mensagens.
-7. **Políticas:** seleção de peers, fanout fixo/adaptativo apenas por estatísticas locais; limites de fanout; orçamento de dados, controle e reparo, cobrado no envio.
-8. **Métricas por evento:** cobertura sobre coorte elegível, T50/T95 (inclusive quando não atingidos), bytes de dados/controle/reparos, duplicações, overhead, tráfego/nó e tempo de recuperação após retorno da conectividade.
-9. **Validação analítica:** reproduzir o modelo Push sem falhas da pág. 3 com N=100 e fanout 1/3; testes para perda=100%, partição, deduplicação, orçamento e reprodutibilidade.
-10. **Helper do notebook:** implementar `run_trial`, `run_manifest` e `summarize_results` para consumir as linhas `doe_*.csv`, registrar status e salvar dados brutos sem depender da ordem das execuções.
-11. **Tuning:** implementar a função objetivo em `experiments/tuning.py`; rodar Optuna em N=50 com o mesmo número de trials por família e seeds de treino separadas do piloto e do teste final; exportar `configs/tuned.yaml`.
-12. **Análise:** piloto → estudo principal → interação; comparação pareada por cenário/seed, dispersão, cobertura×T95×tráfego, recuperação e casos em que o adaptativo perde.
-13. **Relatório:** registrar versões, seeds, configurações, hipóteses, casos não convergentes e a limitação fundamental de que uma DES **não** valida custos de rede/sockets/containers reais.
+### Checklist de implementação
+
+Estado: os 13 itens estão atendidos, com três simplificações em relação ao texto abaixo. Há uma única atualização por execução (versão 0 para 1), então não há conjunto de IDs vistos. A visão de peers é estática e fica em `Network`, não em `Node`. As métricas são contadores agregados, sem registro por evento.
+
+1. Modelo de eventos: `Simulation` com SimPy; relógio e ordem determinística de eventos simultâneos.
+2. Estado local: `Node` com ID, peers, versões, IDs vistos, contadores de duplicatas, timeouts e bytes. As políticas não leem estado global.
+3. Mensagens versionadas: criação de atualização por ID e versão, entrega, deduplicação e atualização da versão local.
+4. Membership e peers: política de visão local e transições join/leave; definir o que acontece com a memória do nó na reconexão.
+5. Transporte: latência, perda e partição, com regras explícitas para mensagens em trânsito e para endpoints que mudam de estado.
+6. Protocolos: Push, Push-Pull, anti-entropy periódica e Push adaptativo + AE; frequência e tamanho real das mensagens configuráveis.
+7. Políticas: seleção de peers, fanout fixo ou adaptativo só por estatísticas locais, limites de fanout, orçamento de dados, controle e reparo cobrado no envio.
+8. Métricas: cobertura sobre a coorte elegível, T50/T95 (inclusive quando não atingidos), bytes de dados, controle e reparo, duplicações, overhead, tráfego por nó e tempo de recuperação após a volta da conectividade.
+9. Validação analítica: reproduzir o modelo Push sem falhas da pág. 3 com N=100 e fanout 1 e 3; testes para perda=100%, partição, deduplicação, orçamento e reprodutibilidade.
+10. Helper do notebook: `run_trial`, `run_manifest` e `summarize_results` consomem as linhas de `doe_*.csv`, registram status e salvam dados brutos sem depender da ordem das execuções.
+11. Tuning: função objetivo em `experiments/tuning.py`; Optuna em N=50 com o mesmo número de trials por família e seeds de treino separadas do piloto e do teste final; exportar `configs/tuned.yaml`.
+12. Análise: piloto → estudo principal → interação; comparação pareada por cenário e seed, dispersão, cobertura × T95 × tráfego, recuperação e casos em que o adaptativo perde.
+13. Relatório: versões, seeds, configurações, hipóteses, casos não convergentes, e o limite de que uma DES não valida custos reais de rede, sockets ou containers.
 
 ### Como usar o DOE no notebook
 
-O notebook deve **carregar o manifesto pronto**, em vez de manter uma lista de cenários duplicada em células:
+O notebook carrega o manifesto pronto, em vez de repetir a lista de cenários em células:
 
 ```python
 from pathlib import Path
@@ -623,9 +744,9 @@ if ROOT.name == "experiments":
 plan = pd.read_csv(ROOT / "experiments" / "doe" / "doe_pilot.csv")
 print(plan.groupby(["phase", "scenario"]).size())
 
-# A implementar em experiments/helper.py:
-# from helper import run_manifest
-# summary_df, coverage_df = run_manifest(plan)
+from helper import RESULTS, run_manifest
+tuned = yaml.safe_load((ROOT / "configs" / "tuned.yaml").read_text())
+summary_df, coverage_df = run_manifest(plan, tuned, RESULTS / "doe_pilot")
 ```
 
-**Não executar a matriz completa antes da validação e do tuning.** Primeiro rodar o caso analítico sem falhas, depois o tuning em N=50, depois o piloto de 600 execuções com os parâmetros congelados. Inspecionar os logs e as métricas do piloto antes de avançar às 17.640 execuções. A varredura de escala (540 execuções) roda por último. O volume total é uma proposta de cobertura experimental, não uma obrigação do PDF nem uma garantia de runtime aceitável.
+Não execute a matriz completa antes da validação e do tuning. Primeiro rodar o caso analítico sem falhas, depois o tuning em N=50, depois o piloto de 600 execuções com os parâmetros congelados. Inspecionar as métricas do piloto antes de avançar às 17.640 execuções. A varredura de escala (540 execuções) roda por último.

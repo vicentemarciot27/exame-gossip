@@ -6,14 +6,21 @@ simulation:
 
 network:
   nodes: 100
-  topology: complete
-  latency_ms: [10, 10]
+  topology: complete  # ou random_regular_connected
+  degree: 8  # só random_regular_connected
+  latency_ms: [10, 10]  # [mín, máx], sorteio uniforme
   packet_loss: 0.0
-  churn_fraction: 0.0
-  partition: null
+  churn_fraction: 0.0  # fração offline em todo instante
+  churn_period_ms: 5000  # ressorteia o conjunto offline a cada período
+  partition: null  # ou {groups: 2, start_ms: 0, end_ms: 20000}
 
 protocol:
-  fanout: 1
+  name: push  # ou push_pull
+  fanout: 1  # ignorado se `adaptive` estiver definido
+  ae_interval_ms: null  # null = sem anti-entropy
+  # null = fanout fixo. adaptativo: {min_fanout: 1, max_fanout: 4,
+  # duplicate_threshold: 0.5, timeout_threshold: 0.3, quiescence_rounds: null}
+  adaptive: null
 
 update:
   size_bytes: 256

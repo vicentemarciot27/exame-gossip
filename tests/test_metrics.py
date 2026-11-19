@@ -43,7 +43,11 @@ def test_metrics_from_a_hand_written_timeline():
         "t95_ms": 1510,
         "bytes_total": 5 * 272,
         "bytes_until_t95": 4 * 272,
+        "bytes_control": 0,
+        "bytes_repair": 0,
         "duplicates": 1,
+        "timeouts": 0,
+        "budget_drops": 0,
     }
     assert metrics.coverage_curve(step_ms=500) == [
         (0, 0.25),
@@ -75,10 +79,10 @@ def test_summary_of_a_push_run_is_consistent():
 
     assert summary["coverage_final"] == 1.0
     assert summary["t50_ms"] < summary["t95_ms"]
-    # Toda entrega ocorre 10 ms depois de uma rodada (múltiplo de 500 ms).
+    # rodadas em múltiplos de 500 ms, entrega 10 ms depois
     assert summary["t95_ms"] % 500 == 10
     assert summary["duplicates"] == sum(node.duplicates for node in simulation.nodes)
-    # Sem perdas, cada mensagem enviada informa um nó (99 vezes) ou é duplicata.
+    # sem perda, toda mensagem informa um nó (99 vezes) ou é duplicata
     assert summary["bytes_total"] == 272 * (99 + summary["duplicates"])
     assert 0 < summary["bytes_until_t95"] < summary["bytes_total"]
 
@@ -96,7 +100,7 @@ def test_mean_coverage_follows_the_analytic_push_model(fanout):
         simulation = Simulation(config, seed)
         simulation.run()
         events = simulation.metrics.coverage_events
-        # Cobertura logo depois das entregas da rodada k, em t = k * 500 + 10.
+        # cobertura logo após as entregas da rodada k, em t = k * 500 + 10
         curves.append(
             [max(c for t, c in events if t <= k * 500 + 10) for k in range(rounds + 1)]
         )
@@ -107,5 +111,5 @@ def test_mean_coverage_follows_the_analytic_push_model(fanout):
         analytic.append(informed / n)
 
     simulated = [mean(curve[k] for curve in curves) for k in range(rounds + 1)]
-    # Diferença observada com 30 seeds: 0,007 (fanout 1) e 0,006 (fanout 3).
+    # medido com 30 seeds: 0,007 (fanout 1) e 0,006 (fanout 3); 0,02 dá folga
     assert max(abs(s - a) for s, a in zip(simulated, analytic)) < 0.02

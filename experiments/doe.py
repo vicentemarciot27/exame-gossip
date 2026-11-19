@@ -29,23 +29,22 @@ NODES = (50, 100, 250, 500)
 BUDGETS = (2048, 4096)  # bytes/nó por janela de 1000 ms; escolha experimental
 SEEDS = tuple(range(1000, 1030))  # seeds de teste, distintas das de tuning
 DURATION_MS = 60_000  # escolha experimental
-TOPOLOGY = "random_regular_connected"  # escolha experimental; grau=8
+TOPOLOGY = "random_regular_connected"  # escolha experimental
 DEGREE = 8
 
-# Varredura de escala, separada do plano principal. Usa menos cenários e seeds
-# porque o custo de uma execução cresce com N. Escolha experimental.
+# escala fora do plano principal, com menos cenários e seeds: o custo de uma
+# execução cresce com N. escolha experimental
 SCALE_NODES = (1_000, 10_000, 100_000)
 SCALE_SEEDS = SEEDS[:10]
 
-CHURN_PERIOD_MS = 5_000  # a cada período, o conjunto de nós offline é sorteado de novo
-# A partição começa em t=0, junto com a injeção da atualização. Com início em
-# 10 s, o Push já teria alcançado todos os nós (N=500: até 9 s em 20 seeds).
+CHURN_PERIOD_MS = 5_000  # o conjunto offline é sorteado de novo a cada período
+# partição em t=0, junto com a injeção. começando em 10 s, o Push já teria
+# coberto todos os nós antes (N=500: até 9 s em 20 seeds)
 PARTITION_START_MS, PARTITION_END_MS = 0, 20_000
 
-# (nome, protocolo, política de fanout, fanout, anti-entropy, quiescência).
-# push_f1 é o baseline fixo, sem tuning. As outras variantes leem os
-# hiperparâmetros de configs/tuned.yaml: as quatro famílias do PDF e a
-# ablação com quiescência.
+# (nome, protocolo, política de fanout, fanout, anti-entropy, quiescência)
+# push_f1 é o baseline fixo, sem tuning. as outras leem configs/tuned.yaml:
+# as quatro famílias do PDF e a ablação com quiescência
 VARIANTS = (
     ("push_f1", "push", "fixed", 1, False, False),
     ("push_tuned", "push", "fixed", "tuned", False, False),
@@ -55,8 +54,8 @@ VARIANTS = (
     ("adaptive_ae_quiescent", "push", "adaptive", "tuned", True, True),
 )
 
-# Detalhes abaixo são escolhas propostas.
-# Fatores não ativos no cenário são zerados e o intervalo de latência é 10 ms.
+# escolhas propostas, não do PDF. fatores inativos no cenário ficam zerados
+# e a latência fica fixa em 10 ms
 MAIN_SCENARIOS = (
     ("stable", 0.00, "constant", 10, 10, 0.00, 0),
     ("loss_1pct", 0.01, "constant", 10, 10, 0.00, 0),
@@ -128,14 +127,14 @@ def record(phase, scenario, variant, n, budget):
 
 
 def design_rows():
-    # Cinco famílias de cenários do PDF, desdobradas em dez configurações.
+    # cinco famílias de cenários do PDF, desdobradas em dez configurações
     for scenario, variant, n, budget in product(
         MAIN_SCENARIOS, VARIANTS, NODES, BUDGETS
     ):
         yield record("main", scenario, variant, n, budget)
 
-    # Experimento fatorial de interação, necessário para a hipótese da pág. 3.
-    # Mantemos 100/500 nós e um orçamento para controlar o tamanho do estudo.
+    # fatorial de interação, exigido pela hipótese da pág. 3 do PDF
+    # só 100/500 nós e um orçamento, senão o estudo cresce demais
     for loss, churn, variant, n in product(
         (0.01, 0.05, 0.10), (0.05, 0.10, 0.20), VARIANTS, (100, 500)
     ):
@@ -177,8 +176,8 @@ def main(output_dir: Path | None = None):
     )
     write_csv(out / "doe_runs.csv", COLS, runs)
 
-    # Piloto pequeno e prioritário: as cinco variantes com tuning, cinco
-    # cenários centrais + interação loss 5% x churn 10%, duas escalas, 10 seeds.
+    # piloto, roda antes de tudo: as cinco variantes com tuning, cinco cenários
+    # centrais + perda 5% x churn 10%, duas escalas, 10 seeds
     pilot_scenarios = (
         MAIN_SCENARIOS[0],  # estável
         MAIN_SCENARIOS[2],  # perda 5%
@@ -201,8 +200,8 @@ def main(output_dir: Path | None = None):
         )
     write_csv(out / "doe_pilot.csv", COLS, pilot)
 
-    # Varredura de escala: cenários estável, perda 5% e churn 10%; as seis
-    # variantes; um orçamento. Os parâmetros são os mesmos congelados em N=50.
+    # escala: estável, perda 5% e churn 10%, as seis variantes, um orçamento
+    # hiperparâmetros congelados em N=50, sem novo tuning
     scale_scenarios = (MAIN_SCENARIOS[0], MAIN_SCENARIOS[2], MAIN_SCENARIOS[7])
     scale = []
     for design_id, (scenario, variant, n) in enumerate(

@@ -1,0 +1,23 @@
+push_tuned:
+  fanout: 1
+  gossip_interval_ms: 250
+push_pull:
+  fanout: 2
+  gossip_interval_ms: 500
+push_ae:
+  fanout: 1
+  gossip_interval_ms: 250
+  ae_interval_ms: 1000
+adaptive_ae:
+  min_fanout: 1
+  max_fanout: 3
+  duplicate_threshold: 0.37701452433124855
+  timeout_threshold: 0.676057338887615
+  ae_interval_ms: 2000
+adaptive_ae_quiescent:
+  min_fanout: 1
+  max_fanout: 3
+  duplicate_threshold: 0.37701452433124855
+  timeout_threshold: 0.676057338887615
+  ae_interval_ms: 2000
+  quiescence_rounds: 1
