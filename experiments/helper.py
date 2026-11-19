@@ -16,6 +16,7 @@ import time
 from copy import deepcopy
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import yaml
 
@@ -90,6 +91,33 @@ def row_config(row, params):
     return config
 
 
+def factorial_params(row, tuned):
+    """Hiperparâmetros de uma linha do fatorial de mecanismos (`fanout_value` "common").
+
+    Os mesmos valores em todas as combinações, para que a diferença venha do
+    mecanismo e não do tuning: rodada de 500 ms, fanout fixo 2, anti-entropy a
+    cada 1.000 ms e, no adaptativo, os limiares e a quiescência do tuning.
+    """
+    adaptive = tuned["adaptive_ae_quiescent"]
+    params = {"gossip_interval_ms": 500}
+    if row["fanout_policy"] == "fixed":
+        params["fanout"] = 2
+    else:
+        for key in ("min_fanout", "max_fanout", "duplicate_threshold", "timeout_threshold"):
+            params[key] = adaptive[key]
+        if row["quiescence"]:
+            params["quiescence_rounds"] = adaptive["quiescence_rounds"]
+    if row["anti_entropy"]:
+        params["ae_interval_ms"] = 1000
+    return params
+
+
+def _params(row, tuned):
+    if row["fanout_value"] == "common":
+        return factorial_params(row, tuned)
+    return tuned[row["protocol_variant"]]
+
+
 def _run_row(job):
     row, params = job
     summary, curve = run_trial(row_config(row, params), int(row["seed"]))
@@ -116,7 +144,7 @@ def run_manifest(plan, tuned, out=None, workers=None):
         done = set(pd.read_csv(f"{out}_summary.csv", usecols=["run_id"])["run_id"])
     # maiores primeiro: as curtas ficam para o fim e os workers terminam juntos
     todo = plan[~plan["run_id"].isin(done)].sort_values("n_nodes", ascending=False)
-    jobs = [(row, tuned[row["protocol_variant"]]) for row in todo.to_dict("records")]
+    jobs = [(row, _params(row, tuned)) for row in todo.to_dict("records")]
 
     summaries, curves = [], []
 
@@ -183,6 +211,75 @@ def summarize_results(summary_df, by=("scenario", "protocol_variant")):
         )
         .reset_index()
     )
+
+
+def pareto_mask(values):
+    """True nas linhas que nenhuma outra domina (todas as colunas a minimizar)."""
+    values = np.asarray(values)
+    # O(n²), irrelevante com dezenas de linhas
+    return np.array(
+        [not ((values <= value).all(axis=1) & (values < value).any(axis=1)).any() for value in values],
+        dtype=bool,
+    )
+
+
+PRIORITIES = ("latency", "traffic", "balanced")
+
+
+def score_conditions(summary_df, by=("scenario", "n_nodes")):
+    """Medianas de T95 e bytes totais por condição e combinação, com a pontuação
+    de cada prioridade (0 = melhor da condição).
+
+    Viável: todas as execuções atingiram T95; só as viáveis são pontuadas.
+    `latency` e `traffic`: excesso relativo ao melhor (0,1 = 10% pior).
+    `balanced`: distância a (0, 0) com os dois objetivos normalizados entre 0 e 1,
+    a regra do tuning.
+    """
+    by = list(by)
+    table = (
+        summary_df.groupby([*by, "protocol_variant"])
+        .agg(
+            t95_ms=("t95_ms", "median"),
+            bytes_total=("bytes_total", "median"),
+            feasible=("t95_ms", lambda s: s.notna().all()),
+        )
+        .reset_index()
+    )
+    scored = []
+    for _, group in table[table["feasible"]].groupby(by):
+        objectives = group[["t95_ms", "bytes_total"]]
+        excess = objectives / objectives.min() - 1
+        span = (objectives.max() - objectives.min()).replace(0, 1)
+        normalized = (objectives - objectives.min()) / span
+        scored.append(
+            group.assign(
+                latency=excess["t95_ms"],
+                traffic=excess["bytes_total"],
+                balanced=np.hypot(normalized["t95_ms"], normalized["bytes_total"]),
+                pareto=pareto_mask(objectives),
+            )
+        )
+    keys = [*by, "protocol_variant"]
+    scores = pd.concat(scored)[[*keys, *PRIORITIES, "pareto"]]
+    return table.merge(scores, on=keys, how="left")
+
+
+def recommend(scored, by=("scenario", "n_nodes")):
+    """Combinação recomendada em cada prioridade: a de menor pontuação média,
+    entre as viáveis em todas as condições. Empate: menor pontuação de tráfego,
+    ou de latência na prioridade de tráfego."""
+    n_conditions = scored.groupby(list(by)).ngroups
+    feasible = scored[scored["feasible"].astype(bool)]
+    everywhere = feasible.groupby("protocol_variant").size() == n_conditions
+    mean = (
+        feasible[feasible["protocol_variant"].isin(everywhere[everywhere].index)]
+        .groupby("protocol_variant")[list(PRIORITIES)]
+        .mean()
+    )
+    return {
+        priority: mean.sort_values([priority, "latency" if priority == "traffic" else "traffic"]).index[0]
+        for priority in PRIORITIES
+    }
 
 
 if __name__ == "__main__":

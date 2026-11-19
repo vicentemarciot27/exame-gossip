@@ -80,6 +80,46 @@ def test_run_manifest_follows_the_contract_and_resumes(tmp_path):
     assert len(table) == 30 and (table["runs"] == 1).all()
 
 
+def test_factorial_rows_share_the_parameters_of_each_mechanism():
+    plan = pd.read_csv(ROOT / "experiments" / "doe" / "doe_factorial.csv")
+    rows = plan.groupby("protocol_variant").first()
+    assert len(rows) == 12
+    for variant, row in rows.iterrows():
+        config = helper.row_config(row, helper.factorial_params(row, TUNED))
+        protocol = config["protocol"]
+        assert config["simulation"]["gossip_interval_ms"] == 500
+        assert protocol["name"] == ("push_pull" if variant.startswith("push_pull") else "push")
+        assert protocol["ae_interval_ms"] == (1000 if "_ae" in variant else None)
+        adaptive = protocol["adaptive"]
+        if "adaptive" in variant:
+            assert adaptive["max_fanout"] == ADAPTIVE["max_fanout"]
+            assert adaptive.get("quiescence_rounds") == (3 if variant.endswith("_q") else None)
+        else:
+            assert adaptive is None and protocol["fanout"] == 2
+
+
+def test_guide_scores_conditions_and_recommends_per_priority():
+    # duas condições; "slow" nunca é melhor, "broken" falha T95 em uma condição
+    medians = {
+        "fast": (1000, 900), "cheap": (3000, 100), "middle": (1500, 300),
+        "slow": (4000, 950), "broken": (900, 50),
+    }  # fmt: skip
+    rows = [
+        {"scenario": scenario, "n_nodes": 100, "protocol_variant": variant, "seed": seed,
+         "t95_ms": None if variant == "broken" and scenario == "b" and seed == 0 else t95,
+         "bytes_total": total_bytes}
+        for scenario in ("a", "b") for variant, (t95, total_bytes) in medians.items() for seed in (0, 1)
+    ]  # fmt: skip
+    scored = helper.score_conditions(pd.DataFrame(rows))
+    a = scored[scored["scenario"] == "a"].set_index("protocol_variant")
+    assert a.loc["fast", "latency"] == pytest.approx(1000 / 900 - 1)  # "broken" é o mais rápido em a
+    assert not a.loc["middle", "pareto"]  # "broken" domina em a
+    b = scored[scored["scenario"] == "b"].set_index("protocol_variant")
+    assert not b.loc["broken", "feasible"] and pd.isna(b.loc["broken", "pareto"])
+    assert b.loc["middle", "pareto"] and not b.loc["slow", "pareto"]
+    assert helper.recommend(scored) == {"latency": "fast", "traffic": "cheap", "balanced": "middle"}
+
+
 def study_with(trials):
     """Estudo em memória com trials (t95_ms, bytes_total, simulações sem T95)."""
     study = optuna.create_study(directions=["minimize", "minimize"])

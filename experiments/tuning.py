@@ -13,7 +13,7 @@ from __future__ import annotations
 import optuna
 import pandas as pd
 import yaml
-from helper import BUDGET, RESULTS, ROOT, run_manifest
+from helper import BUDGET, RESULTS, ROOT, pareto_mask, run_manifest
 
 FAMILIES = ("push_tuned", "push_pull", "push_ae", "adaptive_ae")  # variantes do DOE
 N_TRIALS = 30  # igual para as quatro famílias
@@ -123,14 +123,7 @@ def select_trial(study):
         if trial.state == optuna.trial.TrialState.COMPLETE
     )
     feasible = trials[trials["runs_without_t95"] == 0]
-    values = feasible[["t95_ms", "bytes_total"]].to_numpy()
-    # fronteira: nenhum outro trial é <= nos dois objetivos e < em um
-    # O(n²), irrelevante com 30 trials
-    on_front = [
-        not any((other <= value).all() and (other < value).any() for other in values)
-        for value in values
-    ]
-    front = feasible.loc[on_front]
+    front = feasible[pareto_mask(feasible[["t95_ms", "bytes_total"]])]
     trials["pareto"] = trials["number"].isin(front["number"])
     if front.empty:
         best = trials.sort_values(["runs_without_t95", "bytes_total"]).iloc[0]

@@ -8,6 +8,8 @@ Arquivos produzidos:
     experiments/doe_design.csv   # 588 combinações de fatores (sem seed)
     experiments/doe_runs.csv     # 17.640 execuções planejadas (com seed)
     experiments/doe_scale.csv    # 540 execuções da varredura de escala
+    experiments/doe_factorial.csv   # 2.880 execuções do fatorial de mecanismos
+    experiments/doe_validation.csv  # 1.440 execuções de validação do guia
     experiments/doe_summary.txt  # contagem e definições
 
 Valores de orçamento, tamanhos intermediários de rede, seeds e cronograma
@@ -53,6 +55,16 @@ VARIANTS = (
     ("adaptive_ae", "push", "adaptive", "tuned", True, False),
     ("adaptive_ae_quiescent", "push", "adaptive", "tuned", True, True),
 )
+
+
+def factorial_variants():
+    """As 12 combinações de mecanismos: disseminação × fanout × anti-entropy ×
+    quiescência (só com fanout adaptativo). Parâmetros em helper.factorial_params."""
+    for protocol, policy, ae in product(("push", "push_pull"), ("fixed", "adaptive"), (False, True)):
+        for quiescence in (False, True) if policy == "adaptive" else (False,):
+            name = "_".join([protocol, policy] + ["ae"] * ae + ["q"] * quiescence)
+            yield (name, protocol, policy, "common", ae, quiescence)
+
 
 # escolhas propostas, não do PDF. fatores inativos no cenário ficam zerados
 # e a latência fica fixa em 10 ms
@@ -214,6 +226,37 @@ def main(output_dir: Path | None = None):
         )
     write_csv(out / "doe_scale.csv", COLS, scale)
 
+    # guia de escolha: fatorial dos mecanismos nas condições de treino do guia
+    # e nas de validação, que o guia não vê. orçamento de 4.096 bytes
+    loss_10_churn_20 = ("loss_10_churn_20", 0.10, "constant", 10, 10, 0.20, 0)
+    conditions = {
+        "factorial": list(
+            product(
+                (MAIN_SCENARIOS[0], MAIN_SCENARIOS[2], MAIN_SCENARIOS[7], MAIN_SCENARIOS[9]),
+                (100, 500),
+            )
+        ),
+        "validation": [
+            (MAIN_SCENARIOS[5], 250),  # latência 10-200 ms
+            (loss_10_churn_20, 250),
+            (MAIN_SCENARIOS[8], 1_000),  # churn 20%
+            (MAIN_SCENARIOS[0], 10_000),
+        ],
+    }
+    guide = {}
+    for phase, prefix in (("factorial", "F"), ("validation", "V")):
+        rows = []
+        for design_id, ((scenario, n), variant) in enumerate(
+            product(conditions[phase], factorial_variants()), start=1
+        ):
+            row = record(phase, scenario, variant, n, 4096)
+            rows.extend(
+                {"run_id": f"{prefix}{design_id:03d}-S{seed}", **row, "seed": seed}
+                for seed in SEEDS
+            )
+        write_csv(out / f"doe_{phase}.csv", COLS, rows)
+        guide[phase] = rows
+
     count_design = Counter(row["phase"] for row in design)
     count_runs = Counter(row["phase"] for row in runs)
     summary = (
@@ -232,6 +275,11 @@ def main(output_dir: Path | None = None):
         f"x {len(VARIANTS)} variantes x 3 tamanhos {SCALE_NODES} x 1 budget "
         f"x {len(SCALE_SEEDS)} seeds "
         f"({SCALE_SEEDS[0]}..{SCALE_SEEDS[-1]}) = {len(scale)}\n"
+        f"Guia de escolha (fora do plano acima): 12 combinações de mecanismos "
+        f"x 30 seeds. doe_factorial.csv: estável, perda 5%, churn 10% e partição "
+        f"x N=100 e 500 = {len(guide['factorial'])}. doe_validation.csv: latência "
+        f"10-200 ms e perda 10% + churn 20% em N=250, churn 20% em N=1.000, "
+        f"estável em N=10.000 = {len(guide['validation'])}\n"
         f"Variantes: {', '.join(v[0] for v in VARIANTS)}. push_f1 é fixo; as "
         "demais usam configs/tuned.yaml.\n"
         "Tuning Optuna NÃO incluído: 30 trials por cada uma das 4 famílias do "
@@ -251,11 +299,14 @@ def main(output_dir: Path | None = None):
         "doe_design.csv",
         "doe_runs.csv",
         "doe_scale.csv",
+        "doe_factorial.csv",
+        "doe_validation.csv",
         "doe_summary.txt",
     ):
         path = out / name
         print(f"  {path} ({path.stat().st_size:,} bytes)")
     assert len(scale) == 540
+    assert len(guide["factorial"]) == 2_880 and len(guide["validation"]) == 1_440
     assert len({r["run_id"] for r in scale}) == len(scale)
     assert len(pilot) == 600
     assert len(design) == 588

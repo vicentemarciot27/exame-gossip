@@ -4,6 +4,8 @@ Simulador de eventos discretos que compara quatro estratégias de disseminação
 
 As métricas são cobertura, T50/T95, tráfego em bytes, duplicação, overhead de controle e recuperação após falhas, sob latência heterogênea, perda de pacotes, churn e partições. O simulador mede o comportamento dos algoritmos, não o desempenho real de gRPC, containers ou sockets. O DOE principal usa 50–500 nós simulados. Uma varredura de escala separada usa 1.000, 10.000 e 100.000 nós.
 
+O projeto também propõe um passo a passo para escolher os mecanismos de Gossip por condição de rede e prioridade (latência, tráfego ou equilíbrio): importância dos hiperparâmetros, fatorial dos mecanismos com parâmetros comuns, fronteira de Pareto por condição, recomendação e validação em condições novas. A seção "Guia de escolha de mecanismos" resume o método e os resultados.
+
 ## Instalação e execução
 
 Na raiz do repositório, com `uv` instalado:
@@ -36,6 +38,8 @@ uv run --extra experiments python experiments/tuning.py                         
 uv run --extra experiments python experiments/helper.py experiments/doe/doe_pilot.csv
 uv run --extra experiments python experiments/helper.py experiments/doe/doe_runs.csv
 uv run --extra experiments python experiments/helper.py experiments/doe/doe_scale.csv --workers 14
+uv run --extra experiments python experiments/helper.py experiments/doe/doe_factorial.csv
+uv run --extra experiments python experiments/helper.py experiments/doe/doe_validation.csv --workers 22
 uv run --extra experiments jupyter nbconvert --to notebook --execute --inplace \
     --ExecutePreprocessor.timeout=-1 experiments/notebook.ipynb
 ```
@@ -87,7 +91,7 @@ Os arquivos `__init__.py` podem estar vazios. `src` é o nome do pacote Python (
 | `src/policies/peer_selection.py` | Escolha de destinatários; opera sobre a visão local de peers. O sorteio uniforme sem reposição já existe em `Network.sample_peers`; este arquivo só é criado se houver uma política não uniforme. |
 | `configs/*.yaml` | Cenários declarativos: duração, nós, topologia, latência, perda, churn, orçamento e parâmetros do protocolo. |
 | `configs/tuned.yaml` | Hiperparâmetros congelados de cada variante do DOE, exportados pelo tuning. |
-| `experiments/helper.py` | Cola entre simulador e notebook: `run_trial()`, `row_config()`, `run_manifest()` e `summarize_results()`. Converte linhas de manifesto em configurações, executa simulações em paralelo e devolve `pandas.DataFrame`s. Não contém lógica de Gossip. |
+| `experiments/helper.py` | Cola entre simulador e notebook: `run_trial()`, `row_config()`, `run_manifest()` e `summarize_results()`; para o guia de escolha, `factorial_params()`, `pareto_mask()`, `score_conditions()` e `recommend()`. Converte linhas de manifesto em configurações, executa simulações em paralelo e devolve `pandas.DataFrame`s. Não contém lógica de Gossip. |
 | `experiments/tuning.py` | Espaço de busca de cada família, função objetivo, restrição, regra de escolha na fronteira de Pareto e `tune_all()`. |
 | `experiments/doe.py` | Gera os manifestos CSV do DOE. Não executa simulações. |
 | `experiments/notebook.ipynb` | Orquestra validação, estudos Optuna, execução do DOE, gráficos e análise. Não contém a implementação da simulação. |
@@ -142,6 +146,7 @@ As seis etapas do fluxo, em ordem de execução:
 | 4. Congelamento dos parâmetros | Exportar a configuração escolhida de cada família para `configs/tuned.yaml` |
 | 5. DOE (benchmark definitivo) | N=50–500, churn, perda, latência, partições, seeds de teste. Depois, varredura de escala em N=1.000, 10.000 e 100.000 |
 | 6. Análise estatística | Cobertura × T95 × tráfego, intervalos de confiança, trade-offs |
+| 7. Guia de escolha | Fatorial dos mecanismos com parâmetros comuns, recomendação por prioridade e validação em condições novas |
 
 ### Papel do DOE e do Optuna
 
@@ -408,7 +413,23 @@ def summarize_results(summary_df: pd.DataFrame, by=("scenario", "protocol_varian
                       ) -> pd.DataFrame:
     """Agrega por cenário e variante: medianas, quartis de T95 e fração de
     execuções que atingiram T95."""
+
+def factorial_params(row, tuned: dict) -> dict:
+    """Hiperparâmetros comuns de uma linha do fatorial (`fanout_value` "common")."""
+
+def pareto_mask(values) -> np.ndarray:
+    """True nas linhas que nenhuma outra domina (todas as colunas a minimizar)."""
+
+def score_conditions(summary_df, by=("scenario", "n_nodes")) -> pd.DataFrame:
+    """Medianas de T95 e bytes por condição e combinação, viabilidade, fronteira
+    de Pareto e pontuação de cada prioridade (0 = melhor da condição)."""
+
+def recommend(scored, by=("scenario", "n_nodes")) -> dict:
+    """Combinação de menor pontuação média por prioridade, entre as viáveis em
+    todas as condições."""
 ```
+
+- Linhas com `fanout_value` igual a `common` (os manifestos `doe_factorial.csv` e `doe_validation.csv`) recebem os hiperparâmetros de `factorial_params`; as demais, os de `tuned[protocol_variant]`.
 
 - `tuned` associa cada variante aos seus hiperparâmetros: o conteúdo de `configs/tuned.yaml`. `push_f1` é fixo (fanout 1, 500 ms) e não precisa estar em `tuned`.
 - `row_config` confere, com `assert`, que os hiperparâmetros correspondem ao tratamento descrito na linha do manifesto (`anti_entropy`, `fanout_policy`, `quiescence`).
@@ -449,8 +470,9 @@ Seções do notebook, na ordem de execução:
 4. Exportação dos parâmetros: gravar a configuração escolhida de cada família em `configs/tuned.yaml`.
 5. Carregamento do DOE: ler os manifestos de `experiments/doe/`, incluindo `doe_scale.csv`.
 6. Piloto e benchmark completo: `run_manifest` sobre `doe_pilot.csv`, depois sobre `doe_runs.csv` e por último sobre `doe_scale.csv`; conferir total de execuções, valores ausentes e execuções sem T95.
-7. Análise estatística e gráficos: tabelas por cenário, cobertura × tempo, T95 × tráfego, efeito de N; comparação pareada com teste de Wilcoxon (7.1), interação perda × churn (7.2), orçamento (7.3), varredura de escala de N=50 a 100.000 (7.4), ablação da quiescência e recuperação após a partição (7.5).
-8. Conclusões: resposta à hipótese, casos em que o adaptativo perde e limitações.
+7. Análise estatística e gráficos: tabelas por cenário, cobertura × tempo, T95 × tráfego, efeito de N; comparação pareada com teste de Wilcoxon (7.1), interação perda × churn (7.2), orçamento (7.3), varredura de escala de N=50 a 100.000 (7.4), ablação da quiescência e recuperação após a partição (7.5), efeito de cada fator de ambiente (7.6).
+8. Guia de escolha de mecanismos: importância dos hiperparâmetros (8.1), fatorial dos mecanismos com efeitos em T95, bytes e DATA duplicadas (8.2), fronteira de Pareto e recomendação por prioridade (8.3), validação em condições novas (8.4).
+9. Conclusões: resposta à hipótese, casos em que o adaptativo perde, guia de escolha e limitações.
 
 O notebook define os estudos Optuna e os gráficos. A simulação fica em `src/` e é chamada por `experiments/helper.py`.
 
@@ -536,11 +558,46 @@ Conclusões:
 - Quiescência: `adaptive_ae_quiescent` envia de 6% a 8% dos bytes de `adaptive_ae`, com T95 de 4% a 17% maior no DOE principal e até 33% maior na varredura de escala. Cobertura final e recuperação após a partição são iguais.
 - Recuperação após a partição (`recovery_ms`): `push_pull` 20 ms, `push_ae` 260 ms, `adaptive_ae` e `adaptive_ae_quiescent` 510 ms, `push_tuned` 760 ms, `push_f1` 1.510 ms, iguais de N=50 a 500. O valor de `push_pull` depende de a reconexão coincidir com uma rodada.
 
-A seção 8 do notebook lista os casos em que o adaptativo perde e as limitações do estudo.
+A seção 9 do notebook lista os casos em que o adaptativo perde e as limitações do estudo.
+
+## Guia de escolha de mecanismos
+
+Pergunta: como escolher, de forma sistemática, os mecanismos de Gossip para uma condição de rede e uma prioridade? O passo a passo, implementado na seção 8 do notebook:
+
+1. Métricas: T95 e bytes em 60 s, os objetivos do tuning. Uma combinação é viável numa condição se todas as execuções atingem 95% de cobertura. DATA duplicadas explicam de onde vêm os bytes.
+2. Importância dos hiperparâmetros contínuos nos trials do tuning (PED-ANOVA do Optuna).
+3. Fatorial dos mecanismos: disseminação (Push, Push-Pull) × fanout (fixo, adaptativo) × anti-entropy (não, sim) × quiescência (não, sim; só com fanout adaptativo) = 12 combinações. Todas usam os mesmos parâmetros (`helper.factorial_params`): rodada de 500 ms, fanout fixo 2, anti-entropy a cada 1.000 ms, e no adaptativo os limiares e `quiescence_rounds` de `configs/tuned.yaml`. `doe_factorial.csv`: estável, perda 5%, churn 10% e partição × N=100 e 500 × 30 seeds = 2.880 execuções.
+4. Fronteira de Pareto por condição e recomendação por prioridade. Pontuação em cada condição, 0 = a melhor: `latency` e `traffic` são o excesso relativo de T95 e de bytes; `balanced` é a distância a (0, 0) com os dois objetivos normalizados, a regra do tuning. A recomendação é a combinação de menor pontuação média entre as viáveis em todas as condições.
+5. Validação em condições que não entraram no passo 4. `doe_validation.csv`: latência de 10 a 200 ms e perda de 10% com churn de 20% em N=250, churn de 20% em N=1.000, estável em N=10.000, × 12 combinações × 30 seeds = 1.440 execuções.
+
+Efeito de cada mecanismo, mediana das razões pareadas (com / sem) nas 6 condições do fatorial sem partição:
+
+| Mecanismo | T95 | Bytes em 60 s |
+|---|---|---|
+| Push-Pull | 0,50 a 0,83 | 1,01 a 1,09 (1,12 a 1,39 com quiescência sem anti-entropy) |
+| Fanout adaptativo (1 a 3) contra fixo 2 | 0,75 a 0,86 (0,99 em um caso) | 0,52 a 0,53 |
+| Anti-entropy | 0,71 a 0,86 no Push; 1,00 no Push-Pull | 1,03 a 1,07; 0,28 a 0,38 com quiescência |
+| Quiescência, com anti-entropy | 1,00 no Push-Pull; até 1,20 no Push | 0,08 a 0,09 |
+
+Push com quiescência e sem anti-entropy é a única combinação inviável: na partição, 5% das execuções não atingem T95 e a cobertura final mínima é 0,006.
+
+Guia, montado com as 8 condições do fatorial e validado nas 4 condições novas:
+
+| Prioridade | Combinação | Fatorial | Validação |
+|---|---|---|---|
+| Latência | `push_pull_adaptive_ae` | menor T95 nas 8 condições (empata com `push_pull_adaptive` em 7) | menor T95 nas 4 |
+| Tráfego | `push_adaptive_ae_q` | menos bytes nas 8 | menos bytes em 3; 0,4% acima da melhor com perda de 10% e churn de 20% |
+| Equilíbrio | `push_pull_adaptive_ae_q` | a melhor nas 8; T95 igual ao menor em 7, com 2% a 8% mais bytes que a mais barata sem partição | a melhor nas 4 |
+
+No cenário estável em N=100, `push_pull_adaptive_ae_q` tem T95 de 1.520 ms e 0,29 MB em 60 s; o `push_pull` ajustado da seção 7 tem 2.020 ms e 6,35 MB.
+
+Limites: os parâmetros comuns não foram ajustados para cada combinação; o guia cobre topologia regular de grau 8 e uma única atualização; a pontuação usa uma regra fixa, e empates de T95 são frequentes porque T95 é medido em múltiplos da rodada.
+
+No Push-Pull, o nó sem a atualização chama `policy.fanout` para escolher quantos peers consultar. A quiescência só vale para nós com a atualização (`AdaptiveFanout.fanout`); sem essa condição, uma troca de anti-entropy entre dois nós sem a atualização voltava "same" e parava o pull. A mudança não altera as execuções do Push: o piloto de 600 execuções é idêntico antes e depois.
 
 ## Implementação (timeline)
 
-Estado em 19/11/2026: os nove itens estão feitos. O código de `src/` e de `experiments/` tem 50 testes (`tests/`). Os resultados estão em `experiments/notebook.ipynb`.
+Estado em 19/11/2026: os dez itens estão feitos. O código de `src/` e de `experiments/` tem 53 testes (`tests/`). Os resultados estão em `experiments/notebook.ipynb`.
 
 1. `simulation.py` + `network.py` + `protocols.py`: Push simples, sem falhas, um evento versionado. Feito: rede completa implícita, latência uniforme em ms inteiros, fanout fixo, sorteio uniforme de peers sem reposição, um gerador aleatório por componente (rede, protocolo, injeção).
 2. `metrics.py`: as colunas definidas em "Especificação do modelo", com contadores agregados. Um registro por mensagem não cabe na memória em N=100.000 (10 milhões de mensagens por execução). Feito: `coverage_final`, `t50_ms`, `t95_ms`, `bytes_total`, `bytes_until_t95`, `duplicates` e a curva de cobertura amostrada. Feito depois, com os mecanismos que os geram: a coorte de nós online e `recovery_ms` (item 4); `bytes_control`, `bytes_repair`, `timeouts` e `budget_drops` (item 5). `wall_time_s` é medido em `helper.run_trial`.
@@ -551,6 +608,7 @@ Estado em 19/11/2026: os nove itens estão feitos. O código de `src/` e de `exp
 7. Validação: testes de corretude e comparação com o modelo analítico. Feito para o Push sem falhas: em N=100 e 30 seeds, a cobertura média simulada difere da recorrência da página 3 do PDF em no máximo 0,007 (fanout 1) e 0,006 (fanout 3) nas 12 primeiras rodadas (`tests/test_metrics.py`).
 8. `experiments/tuning.py`: tuning com Optuna em N=50 e grade de `quiescence_rounds`; exportar `configs/tuned.yaml`. Feito: 120 trials e 10 pontos de grade, 3.900 simulações.
 9. DOE no notebook: piloto, benchmark completo, varredura de escala e análise estatística. Feito: 600 + 17.640 + 540 execuções.
+10. Guia de escolha de mecanismos: fatorial de 12 combinações, recomendação por prioridade e validação. Feito: 2.880 + 1.440 execuções (0,8 h e 4,3 h de CPU, somadas de `wall_time_s`).
 
 ## Rastreabilidade com a apresentação e plano do DOE
 
@@ -588,6 +646,8 @@ Saídas:
 - `experiments/doe/doe_design.csv`: 588 combinações de fatores do plano completo, ainda sem seeds.
 - `experiments/doe/doe_runs.csv`: 17.640 execuções planejadas, cada uma com seed.
 - `experiments/doe/doe_scale.csv`: 540 execuções da varredura de escala (N=1.000, 10.000 e 100.000), fora das 17.640.
+- `experiments/doe/doe_factorial.csv`: 2.880 execuções do fatorial de mecanismos (12 combinações × 4 cenários × N=100 e 500 × 30 seeds), com `fanout_value` = `common`.
+- `experiments/doe/doe_validation.csv`: 1.440 execuções de validação do guia (12 combinações × 4 condições novas × 30 seeds).
 - `experiments/doe/doe_summary.txt`: relatório com contagens.
 
 Fase principal: 10 configurações de cenário × 6 variantes × 4 tamanhos de rede × 2 orçamentos × 30 seeds = 14.400 execuções.
