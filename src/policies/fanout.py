@@ -51,7 +51,7 @@ class AdaptiveFanout:
         self.same_version_seen = [False] * n  # anti-entropy achou peer na mesma versão
 
     def fanout(self, node):
-        """Chamado a cada rodada de um nó que já tem a atualização."""
+        """Chamado a cada rodada. No Push-Pull, também por nós sem a atualização."""
         i = node.id
         # delta desde a rodada anterior
         received = node.received - self.seen_received[i]
@@ -61,7 +61,8 @@ class AdaptiveFanout:
         if received and duplicates / received > self.duplicate_threshold:
             self.current[i] = max(self.min_fanout, self.current[i] - 1)
 
-        if self.quiescence_rounds:
+        # sem a atualização não há o que saturar: o pull do Push-Pull continua
+        if self.quiescence_rounds and node.version:
             if duplicates or self.same_version_seen[i]:
                 self.saturation_count[i] += 1
             self.same_version_seen[i] = False

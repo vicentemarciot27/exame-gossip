@@ -102,6 +102,16 @@ def test_quiescent_node_resumes_on_older_peer_or_newer_version():
         assert policy.fanout(node) > 0
 
 
+def test_node_without_the_update_never_goes_quiescent():
+    # Push-Pull: o nó sem a atualização pede a `fanout` peers; anti-entropy
+    # com outro nó sem a atualização volta "same" e não pode parar o pull
+    policy, node = policy_and_node(quiescence_rounds=1)
+    node.version = 0
+    for _ in range(3):
+        policy.on_ae_result(node, "same")
+        assert policy.fanout(node) == 4
+
+
 def test_without_quiescence_the_fanout_never_reaches_zero():
     policy, node = policy_and_node()
     for _ in range(20):
