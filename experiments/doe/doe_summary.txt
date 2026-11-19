@@ -1,9 +1,13 @@
-Piloto: 480 runs (6 cenários x 4 famílias x 2 N x 10 seeds)
-Designs: 490 (main=400, interaction=90)
-Runs: 14700 (main=12000, interaction=2700)
+Piloto: 600 runs (6 cenários x 5 variantes com tuning x 2 N x 10 seeds)
+Designs: 588 (main=480, interaction=108)
+Runs: 17640 (main=14400, interaction=3240)
 Seeds/teste: 1000..1029 (30 por desenho)
-Main: 10 cenários x 5 variantes x 4 tamanhos x 2 budgets x 30 seeds = 12000
-Interaction: 3 perdas x 3 churn x 5 variantes x 2 tamanhos x 1 budget x 30 seeds = 2700
-Tuning Optuna NÃO incluído: planejar separadamente 30 trials por cada uma das 4 famílias do PDF em N=50, com seeds de treino diferentes das de teste.
-Atenção: churn_fraction é magnitude, não o processo temporal de join/leave. Antes de rodar, definir taxa/duração/reentrada, coorte elegível, distribuição das latências, política de partição e orçamento de AE.
+Main: 10 cenários x 6 variantes x 4 tamanhos x 2 budgets x 30 seeds = 14400
+Interaction: 3 perdas x 3 churn x 6 variantes x 2 tamanhos x 1 budget x 30 seeds = 3240
+Escala (doe_scale.csv, fora do plano acima): 3 cenários x 6 variantes x 3 tamanhos (1000, 10000, 100000) x 1 budget x 10 seeds (1000..1009) = 540
+Variantes: push_f1, push_tuned, push_pull, push_ae, adaptive_ae, adaptive_ae_quiescent. push_f1 é fixo; as demais usam configs/tuned.yaml.
+Tuning Optuna NÃO incluído: 30 trials por cada uma das 4 famílias do PDF em N=50, seeds de treino 0..9, e uma grade de quiescence_rounds.
+Churn: churn_fraction é a fração de nós offline em todo instante; o conjunto offline é sorteado de novo a cada 5000 ms.
+Partição: grupos por node_id % 2, de 0 a 20000 ms.
+A especificação completa está na seção 'Especificação do modelo' do README.
 Este script GERA o DOE; não implementa protocolos nem executa simulações.

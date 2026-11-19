@@ -1,0 +1,152 @@
+Sim. Revendo o README atual, ele já está bem completo como planejamento do projeto, mas ainda faltam algumas definições importantes para que outra pessoa consiga implementar o simulador e reproduzir os experimentos sem precisar tomar decisões por conta própria.
+
+Eu não aumentaria muito a arquitetura. Faria principalmente estes ajustes.
+1. O que falta, por prioridade
+Prioridade	Item	Situação
+Alta	Definir matematicamente o churn e as falhas	Ainda indefinido
+Alta	Formalizar as métricas e condições de parada	Parcial
+Alta	Fechar o protocolo de tuning com Optuna	Parcial
+Alta	Corrigir a definição de saturação e quiescência	Precisa de revisão
+Média	Sincronizar DOE, variantes e parâmetros otimizados	Pendente
+Média	Definir critérios de aceitação e testes	Parcial
+Média	Formalizar avaliação de escalabilidade	Parcial
+Média	Documentar mudanças em relação ao projeto original	Incompleto
+
+2. As quatro questões mais importantes
+A. Modelo de falhas
+O README diz que haverá churn, perdas, latências heterogêneas e partições, mas não define completamente seu comportamento.
+
+Por exemplo, churn_fraction: 0.10 pode significar:
+- 10% dos nós offline simultaneamente;
+- 10% dos nós entrando ou saindo a cada intervalo;
+- 10% dos nós sofrendo pelo menos uma desconexão durante o experimento.
+São modelos diferentes e podem produzir resultados muito distintos.
+
+Eu acrescentaria uma seção chamada Modelo de rede e falhas, especificando a distribuição temporal dos eventos, o comportamento das mensagens em trânsito e o estado preservado na reconexão.
+B. Definições exatas das métricas
+O README lista as métricas corretamente, mas precisa formalizar seu cálculo.
+
+Principalmente:
+- T95: tempo até 95% da coorte elegível receber a atualização.
+- Não convergência: o que fazer quando T95 não é alcançado.
+- Recuperação: tempo entre o fim de uma partição/reconexão e o restabelecimento da cobertura definida.
+- Duplicação: mensagens recebidas contendo atualizações já conhecidas.
+- Overhead: bytes de controle divididos pelos bytes totais.
+- Tráfego: distinguir bytes totais e bytes enviados até T95.
+Também incluiria o tamanho das mensagens de dados, ACKs, digest e pedidos de reparo.
+
+Isso é essencial para comparar os protocolos sob o mesmo orçamento.
+C. Quiescência e saturação
+Aqui existe um problema conceitual que eu corrigiria.
+
+O README atualmente propõe usar duplicatas recebidas pelo nó como evidência de saturação.
+
+Isso pode ser um sinal útil, mas não demonstra que os peers para os quais aquele nó está enviando já possuem a atualização.
+
+Portanto, eu definiria a quiescência como uma heurística baseada em evidências locais e testaria sua confiabilidade.
+
+Uma primeira implementação poderia usar:
+- Taxa de duplicatas recebidas.
+- Número de rodadas consecutivas sem informação nova.
+- ACKs de peers que já conhecem a atualização, caso vocês decidam modelá-los.
+- Retomada quando surgir uma versão nova ou a anti-entropy identificar um peer desatualizado.
+Os ACKs acrescentam tráfego, que também precisa ser contabilizado.
+
+Isso merece um experimento de ablação próprio, conforme vocês já começaram a planejar com adaptive_ae_quiescent.
+D. Optuna
+O README já coloca o Optuna no momento correto, mas há decisões em aberto:
+1. Quais cenários serão usados durante o tuning?
+2. Quantas seeds serão avaliadas por trial?
+3. Qual a função objetivo quando T95 não for atingido?
+4. Como escolher uma configuração entre as soluções da fronteira de Pareto?
+5. Como aplicar configs/tuned.yaml sem sobrescrever os baselines fixos?
+Eu definiria essas decisões antes de implementar tuning.py.
+
+Caso contrário, é possível terminar o tuning sem uma regra objetiva para selecionar os parâmetros utilizados no benchmark.
+3. Atenção à escalabilidade
+O README já apresenta medições até 1 milhão de nós. Isso é ótimo como evidência preliminar de capacidade computacional.
+
+Entretanto, há uma diferença entre o benchmark medido e o DOE proposto:
+- As medições de desempenho apresentadas foram realizadas em rede completa.
+- O DOE principal utiliza topologia regular de grau 8.
+A estrutura da topologia afeta diretamente a disseminação, o número de contatos úteis e potencialmente o custo de memória.
+
+Eu documentaria explicitamente que os benchmarks da rede completa não garantem o mesmo desempenho computacional na topologia regular.
+
+Também acrescentaria testes progressivos com 1.000, 10.000 e 100.000 nós nessa topologia.
+
+Não incluiria 1 milhão de nós no DOE completo ainda. Manteria como teste opcional de estresse.
+4. O que falta nos testes
+O README menciona pytest, mas eu adicionaria uma pequena matriz de critérios de aceitação.
+Teste	Comportamento esperado
+Sem perdas	Push alcança cobertura compatível com o modelo teórico
+Perda de 100%	Nenhuma mensagem é entregue pelo transporte
+Deduplicação	A mesma atualização não é aplicada duas vezes
+Orçamento	Nenhum nó excede o teto definido
+Partição	Não há comunicação entre grupos isolados
+Reconexão	Anti-entropy consegue recuperar atualizações ausentes
+Quiescência	Push pode parar e voltar a disseminar quando necessário
+Reprodutibilidade	Mesmos parâmetros e seeds produzem resultados idênticos
+
+Isso ajuda muito na implementação, porque cada funcionalidade passa a ter uma condição verificável de conclusão.
+5. DOE e documentação precisam ficar sincronizados
+O README já prevê a variante adaptive_ae_quiescent, mas informa que ela ainda não foi adicionada ao doe.py.
+
+Também há uma varredura de escala planejada com 450 execuções.
+
+Eu incluiria uma checagem automática que confirme:
+- Quais variantes existem no código.
+- Quais variantes aparecem nos manifestos.
+- Quais recebem tuning.
+- Quais usam parâmetros fixos.
+- Se todas as combinações esperadas estão presentes.
+Assim, o notebook não executará um plano experimental desatualizado.
+6. Eu acrescentaria uma seção sobre a mudança do projeto
+Como vocês precisam apresentar ao professor a reformulação da proposta, colocaria no README uma seção curta:
+
+Evolução da proposta original
+Aspecto	Antes	Agora
+Arquitetura	Processos distribuídos	Eventos discretos
+Linguagem	Go	Python
+Comunicação	gRPC	Transporte simulado
+Falhas	Docker + netem	Modelo de falhas reproduzível
+Métricas	Prometheus / OpenTelemetry	Coletor interno e DataFrames
+Escala	50–500 nós	Até 100.000 no DOE de escala; 1 milhão como teste de estresse
+Experimentos	Infraestrutura real	DOE + Optuna + Jupyter
+Foco	Protocolo e implementação	Comportamento algorítmico
+
+Essa tabela também será útil para o primeiro PDF que você pretende apresentar.
+
+Minha recomendação: o que fazer agora?
+Eu seguiria esta sequência:
+1
+Fechar a especificação
+
+Definir churn, falhas, métricas, quiescência e regras do Optuna. Isso resolve as ambiguidades que podem comprometer os resultados.
+
+
+
+2
+Implementar metrics.py
+
+O Push inicial já está descrito como implementado. O próximo passo lógico é medir cobertura, T50, T95 e bytes.
+
+
+
+3
+Implementar os demais protocolos e as falhas
+
+Push-Pull, anti-entropy, fanout adaptativo, orçamento, churn e partições, com testes de corretude.
+
+
+
+4
+Validar, executar Optuna e congelar os parâmetros
+
+Somente depois avançar ao piloto, DOE completo e varredura de escala.
+
+
+
+Minha conclusão: não faltam grandes funcionalidades na concepção do projeto. Faltam principalmente definições operacionais e critérios de validação.
+
+Eu resolveria essas pendências antes de adicionar mais cenários ou protocolos. O README já tem escopo suficiente para um trabalho bastante sólido de Sistemas Distribuídos; agora o mais importante é transformar o planejamento em um simulador verificável e em experimentos cientificamente defensáveis.

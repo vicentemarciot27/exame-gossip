@@ -12,6 +12,9 @@ network:
   churn_fraction: 0.0
   partition: null
 
+protocol:
+  fanout: 1
+
 update:
   size_bytes: 256
   initial_infected: 1
